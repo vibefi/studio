@@ -1,0 +1,14 @@
+{
+  "capabilities": {
+    "ipfs": {
+      "allow": [
+        {
+          "cid": "*",
+          "paths": ["**"],
+          "as": ["json", "text", "snippet", "image"],
+          "maxBytes": 262144
+        }
+      ]
+    }
+  }
+}
