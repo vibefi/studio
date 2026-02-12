@@ -143,19 +143,22 @@ Add an injected read-only IPFS capability from host to vapps, analogous to `wind
 ### 10.4 Hard Execution Boundary (Non-Negotiable)
 1. Treat IPFS as data capability only, never code capability.
 2. Only executable JS originates from locally built bundle output served over `app://`.
-3. IPFS content is never fed into:
+3. IPFS content is never fed into execution sinks, including:
    - dynamic import/module loaders,
-   - script tags,
+   - `eval`, `new Function`, and string-based timer execution,
+   - script tags or script-like DOM injection paths,
    - worker creation,
-   - iframe navigation.
+   - iframe navigation/srcdoc.
 4. Client runtime enforces this independently of vapp behavior.
 
 ### 10.5 Runtime/CSP Enforcement Changes
 1. Keep `connect-src 'none'` so vapps cannot directly fetch network resources.
-2. Tighten script policy to remove inline execution where feasible in app webviews.
-3. Set restrictive CSP defaults: `object-src 'none'`, `frame-src 'none'`, `worker-src 'none'`, and no script execution from `blob:`/`data:`.
+2. Enforce script policy without exceptions: no `'unsafe-inline'`, no `'unsafe-eval'`, and no script execution from `blob:`/`data:`.
+3. Set restrictive CSP defaults: `object-src 'none'`, `frame-src 'none'`, `worker-src 'none'`, `base-uri 'none'`, `form-action 'none'`.
 4. Add `X-Content-Type-Options: nosniff` on host-served responses.
-5. Keep host IPC as the only network bridge.
+5. When content is intended only for save/export flows, serve with `Content-Disposition: attachment` to prevent accidental inline interpretation.
+6. Enable Trusted Types in app webviews to reduce DOM XSS sink abuse.
+7. Keep host IPC as the only network bridge.
 
 ### 10.6 Host-Side IPFS Firewall (Critical)
 1. CID verification required before returning payload to vapp.
@@ -172,6 +175,7 @@ Add an injected read-only IPFS capability from host to vapps, analogous to `wind
    - `as: json` must parse as JSON and fit schema/caps.
    - `as: text|snippet` must pass UTF-8 + text sanitizer.
    - `as: image` must decode and re-encode as allowed raster format.
+8. Treat agent/reviewer static checks as advisory only; host/runtime enforcement is the security boundary.
 
 ### 10.7 Data Inertness Guarantees
 1. JSON returned as structured data, not executable source.
@@ -239,8 +243,15 @@ Add an injected read-only IPFS capability from host to vapps, analogous to `wind
 2. Never use IPFS strings as HTML (`dangerouslySetInnerHTML`) or dynamic script import.
 3. Keep rendering paths data-only (code as text, metadata as typed objects, images as sanitized bitmaps).
 4. Display CID/path/hash provenance in UI for auditability.
+5. Do not rely on lint/review rules alone (e.g., "disallow eval"); enforce equivalent restrictions through runtime policy.
 
-### 10.14 Rollout Plan for IPFS Capability
+### 10.14 Why Review Rules Alone Are Insufficient
+1. Rules can be bypassed or missed in manual/agent review.
+2. Transitive or generated code may introduce execution sinks even when first-party code appears compliant.
+3. Runtime guarantees must hold even if a malicious or compromised vapp is loaded.
+4. Therefore, policy checks are useful defense-in-depth, but CSP + IPC + host-side validation must be the hard controls.
+
+### 10.15 Rollout Plan for IPFS Capability
 1. Phase A: define typed API contract + CSP/runtime hardening requirements.
 2. Phase B: implement host IPC provider with IPFS firewall and CID verification.
 3. Phase C: implement studio review and metadata flows on top of typed APIs.
