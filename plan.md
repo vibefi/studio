@@ -115,56 +115,109 @@ Build `studio` as a VibeFi-compatible vapp that is the primary governance entryp
 ### 10.1 Problem
 Current vapp constraints allow injected wallet/RPC but disallow arbitrary HTTP. That blocks safe, consistent in-vapp retrieval of IPFS assets (manifests, media, metadata), which studio and other vapps will likely need.
 
+The critical requirement is stronger than "safe fetch":
+1. vapps must not be able to retrieve content in a way that can become executable code.
+2. IPFS retrieval must still support code-review UX and metadata use cases.
+
 ### 10.2 Design Goals
 1. Keep decentralization: content addressed, verifiable by CID.
-2. Keep security: no arbitrary network egress; no executable asset loading from IPFS into vapp runtime.
+2. Keep security: no arbitrary network egress and no executable asset loading from IPFS into vapp runtime.
 3. Keep compatibility: similar injection model to existing wallet/RPC.
 4. Keep determinism: same input CIDs should produce same bytes across nodes/gateways.
+5. Enforce guarantees in the host/client, not by trusting vapp code.
 
 ### 10.3 Proposed Capability Model
-Add an injected read-only IPFS capability from host to vapps, analogous to `window.ethereum`:
+Add an injected read-only IPFS capability from host to vapps, analogous to `window.ethereum`, but data-only:
 1. `window.vibefiIpfs.request({ method, params })` (or `window.vibefi.request` namespace extension).
-2. Supported methods (MVP):
-   - `vibefi_ipfsHead(cid, path?)` -> returns `{ cid, path, size, contentType }`.
-   - `vibefi_ipfsCat(cid, path?, opts?)` -> returns bytes (base64/hex) with strict size cap.
-   - `vibefi_ipfsGetJson(cid, path)` -> returns parsed JSON only after size/type checks.
-3. No write/pin methods exposed to vapps in MVP.
+2. Expose typed, inert methods only:
+   - `vibefi_ipfsHead(cid, path?)` -> `{ cid, path, size, contentType, sha256 }`.
+   - `vibefi_ipfsGetJson(cid, path, schemaId?)` -> validated JSON object.
+   - `vibefi_ipfsGetTextPreview(cid, path, opts?)` -> plain text/truncated text for display only.
+   - `vibefi_ipfsGetImage(cid, path, opts?)` -> sanitized/re-encoded raster image bytes or object URL token from host.
+   - `vibefi_ipfsList(cid, path?)` -> deterministic directory listing/manifest view.
+3. No generic `cat`/`raw bytes` method exposed to vapps in MVP.
+4. No write/pin methods exposed to vapps in MVP.
 
-### 10.4 Host-Side Enforcement (Critical)
+### 10.4 Hard Execution Boundary (Non-Negotiable)
+1. Treat IPFS as data capability only, never code capability.
+2. Only executable JS originates from locally built bundle output served over `app://`.
+3. IPFS content is never fed into:
+   - dynamic import/module loaders,
+   - script tags,
+   - worker creation,
+   - iframe navigation.
+4. Client runtime enforces this independently of vapp behavior.
+
+### 10.5 Runtime/CSP Enforcement Changes
+1. Keep `connect-src 'none'` so vapps cannot directly fetch network resources.
+2. Tighten script policy to remove inline execution where feasible in app webviews.
+3. Set restrictive CSP defaults: `object-src 'none'`, `frame-src 'none'`, `worker-src 'none'`, and no script execution from `blob:`/`data:`.
+4. Add `X-Content-Type-Options: nosniff` on host-served responses.
+5. Keep host IPC as the only network bridge.
+
+### 10.6 Host-Side IPFS Firewall (Critical)
 1. CID verification required before returning payload to vapp.
 2. Allowlist only immutable `cid + path` access; reject scheme/URL inputs.
 3. Hard size limits (global + per-call) to prevent memory abuse.
-4. Media type and extension policy:
-   - allow data assets (`.json`, `.webp`, `.png`, `.jpg`, `.txt`, etc.)
-   - block executable/script-like assets (`.js`, `.mjs`, `.html`, `.svg` unless sanitized, `.wasm`)
-5. Return raw bytes/data only; never auto-execute or mount remote code.
+4. Parse-by-content and parser validation (not extension-only policy):
+   - JSON must parse as UTF-8 JSON and optionally match known schema.
+   - images must decode as expected media and be re-encoded by host before return.
+   - text previews must be decoded as plain text with strict max bytes.
+5. Deny active/executable content classes for vapp retrieval:
+   - JavaScript/modules, HTML, WASM, SVG-as-active-content, PDFs with script, and other active formats.
 6. Preserve CSP `connect-src 'none'`; all network access remains host-mediated IPC.
 
-### 10.5 Decentralization Strategy
+### 10.7 Data Inertness Guarantees
+1. JSON returned as structured data, not executable source.
+2. Code review files are returned as inert text/tokens only.
+3. Images are returned as decoded/re-encoded raster payloads (or safe host object references), not arbitrary original byte streams.
+4. The API surface should make execution misuse hard by design.
+
+### 10.8 Decentralization Strategy
 1. Retrieval strategy in host:
    - local IPFS node first
    - trustless gateway fallback
 2. On fallback, verify returned bytes against requested CID before exposing data.
 3. Prefer multi-gateway fallback config for availability without changing trust model.
 
-### 10.6 Manifest and Constraints Changes
+### 10.9 Studio Code Review Use Case
+1. Add a dedicated host operation for audit workflow, e.g. `vibefi_ipfsReviewBundle(cid)`.
+2. Host returns:
+   - deterministic file tree and hashes,
+   - manifest summary,
+   - inert text previews/snippets,
+   - optional static analysis findings.
+3. Studio renders these results as data only; no bundle code is executed during review.
+
+### 10.10 Token List / Metadata Use Case
+1. Provide specialized methods like `vibefi_ipfsGetTokenList(cid, path)` that enforce known schema and caps.
+2. Optionally support signature verification for trusted publishers.
+3. Return typed records only (tokens/chains/extensions), not raw payloads.
+
+### 10.11 Manifest and Constraints Changes
 1. Extend vapp constraints documentation to include injected IPFS capability as an approved resource.
 2. Add optional manifest field describing expected IPFS data dependencies, e.g.:
    - `ipfsAccess.allowed: [{ cid, paths, maxBytes, contentTypes }]`
 3. Host enforces that runtime IPFS reads stay within declared allowances (least privilege).
 4. Studio can request broader read-only access than typical vapps only if explicitly declared and approved.
+5. Include capability type declarations (e.g., `json`, `tokenList`, `textPreview`, `image`) so grants are behavior-scoped, not file-extension scoped.
 
-### 10.7 Security Notes for Studio
+### 10.12 Security Notes for Studio
 1. Studio should treat IPFS data as untrusted user content.
 2. Never use IPFS strings as HTML (`dangerouslySetInnerHTML`) or dynamic script import.
-3. Parse JSON with schema checks before use.
-4. Display CID/path provenance in UI for auditability.
+3. Keep rendering paths data-only (code as text, metadata as typed objects, images as sanitized bitmaps).
+4. Display CID/path/hash provenance in UI for auditability.
 
-### 10.8 Rollout Plan for IPFS Capability
-1. Phase A: define API contract + constraints updates.
-2. Phase B: implement host IPC provider and enforcement layer.
-3. Phase C: add studio read-only integration for manifests/metadata previews.
-4. Phase D: formalize policy tests (blocked executable types, CID mismatch, oversized payloads).
+### 10.13 Rollout Plan for IPFS Capability
+1. Phase A: define typed API contract + CSP/runtime hardening requirements.
+2. Phase B: implement host IPC provider with IPFS firewall and CID verification.
+3. Phase C: implement studio review and metadata flows on top of typed APIs.
+4. Phase D: formalize policy tests:
+   - blocked executable formats,
+   - no raw-byte API escape hatches,
+   - CID mismatch rejection,
+   - oversized payload rejection,
+   - path traversal rejection.
 
 ## 11. Questions / Uncertainties
 1. Should studio MVP support only `publishDapp` proposals, or also `upgradeDapp` on day one?
