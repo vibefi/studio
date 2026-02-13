@@ -1,0 +1,13 @@
+.vibefi
+
+node_modules/
+dist/
+.vite/
+
+.env
+.env.*
+
+coverage/
+
+*.log
+bun.lock
