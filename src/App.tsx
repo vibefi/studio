@@ -1,6 +1,16 @@
 import { type ReactNode, useMemo, useState } from "react";
-import { type Address, type Hex, type PublicClient, type WalletClient } from "viem";
+import {
+  decodeFunctionData,
+  hexToString,
+  isHex,
+  toBytes,
+  type Address,
+  type Hex,
+  type PublicClient,
+  type WalletClient,
+} from "viem";
 import addressesJson from "../addresses.json";
+import dappRegistryAbi from "../abis/DappRegistry.json";
 import { shortHash } from "./env";
 import { buildPublicClient, buildWalletClient, connectWallet } from "./eth/clients";
 import {
@@ -124,6 +134,13 @@ const CODE_EXTENSIONS = new Set([
 ]);
 
 const SNIPPET_PAGE_LINES = 180;
+const HISTORICAL_STATES = new Set(["Canceled", "Defeated", "Expired", "Executed"]);
+
+type ProposalBundleRef = {
+  action: "publishDapp" | "upgradeDapp";
+  rootCid: string;
+  dappId?: bigint;
+};
 
 function extensionFor(path: string): string {
   const trimmed = path.trim();
@@ -148,6 +165,54 @@ function formatBytes(bytes: number): string {
 function withLineNumbers(text: string, startLine: number): string {
   const lines = text ? text.split("\n") : [];
   return lines.map((line, idx) => `${String(startLine + idx).padStart(5, " ")} | ${line}`).join("\n");
+}
+
+function decodeCidHex(value: Hex): string {
+  if (!isHex(value)) return value;
+  try {
+    return hexToString(value).replace(/\0+$/g, "");
+  } catch {
+    const bytes = toBytes(value);
+    if (bytes.length === 0) return "";
+    return value;
+  }
+}
+
+function sameAddress(a?: Address, b?: Address): boolean {
+  if (!a || !b) return false;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function extractProposalBundleRef(
+  proposal: ProposalInfo,
+  expectedRegistry?: Address
+): ProposalBundleRef | null {
+  for (let i = 0; i < proposal.calldatas.length; i += 1) {
+    const calldata = proposal.calldatas[i];
+    const target = proposal.targets[i];
+    if (expectedRegistry && !sameAddress(target, expectedRegistry)) continue;
+    try {
+      const decoded = decodeFunctionData({ abi: dappRegistryAbi as any, data: calldata });
+      if (decoded.functionName === "publishDapp") {
+        const rootCidHex = decoded.args?.[0] as Hex | undefined;
+        if (!rootCidHex) continue;
+        const rootCid = decodeCidHex(rootCidHex);
+        if (!rootCid) continue;
+        return { action: "publishDapp", rootCid };
+      }
+      if (decoded.functionName === "upgradeDapp") {
+        const dappId = decoded.args?.[0] as bigint | undefined;
+        const rootCidHex = decoded.args?.[1] as Hex | undefined;
+        if (!rootCidHex) continue;
+        const rootCid = decodeCidHex(rootCidHex);
+        if (!rootCid) continue;
+        return { action: "upgradeDapp", rootCid, dappId };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 export function App() {
@@ -177,6 +242,7 @@ export function App() {
 
   const [voteSupport, setVoteSupport] = useState<"for" | "against" | "abstain">("for");
   const [voteReason, setVoteReason] = useState("");
+  const [proposalView, setProposalView] = useState<"all" | "active" | "historical">("all");
 
   const [reviewCid, setReviewCid] = useState("");
   const [reviewBasePath, setReviewBasePath] = useState("");
@@ -358,16 +424,15 @@ export function App() {
     }
   }
 
-  async function onLoadReviewBundle() {
+  async function loadReviewBundle(cid: string, basePath: string) {
     try {
-      const cid = reviewCid.trim();
       if (!cid) {
         throw new Error("CID is required");
       }
 
       setReviewLoading(true);
       setStatus("Loading packaged vapp file index...");
-      const listing = await ipfsList(cid, reviewBasePath.trim());
+      const listing = await ipfsList(cid, basePath);
       const files = listing.files
         .map((file) => ({ ...file, isCode: isLikelyCodeFile(file.path) }))
         .sort((a, b) => Number(b.isCode) - Number(a.isCode) || a.path.localeCompare(b.path));
@@ -395,6 +460,10 @@ export function App() {
     }
   }
 
+  async function onLoadReviewBundle() {
+    await loadReviewBundle(reviewCid.trim(), reviewBasePath.trim());
+  }
+
   async function onOpenTypedReviewPath() {
     await loadSnippetWindow(selectedReviewPath, 1);
   }
@@ -413,6 +482,21 @@ export function App() {
     await loadSnippetWindow(selectedReviewPath, selectedReviewSnippet.lineEnd + 1);
   }
 
+  async function onReviewProposalBundle(proposal: ProposalInfo) {
+    const ref = extractProposalBundleRef(proposal, network?.dappRegistry);
+    if (!ref) {
+      setStatus(`Proposal #${proposal.proposalId.toString()} does not include a publish/upgrade bundle CID`);
+      return;
+    }
+    setReviewCid(ref.rootCid);
+    setReviewBasePath("");
+    setSelectedReviewPath("");
+    setSelectedReviewHead(null);
+    setSelectedReviewSnippet(null);
+    setStatus(`Loading bundle CID from proposal #${proposal.proposalId.toString()} (${ref.action})...`);
+    await loadReviewBundle(ref.rootCid, "");
+  }
+
   const canAct = !!(publicClient && walletClient && account && network);
   const latestTxUrl = txHash ? txUrl(chainId, txHash) : "";
   const filteredReviewFiles = useMemo(() => {
@@ -423,6 +507,19 @@ export function App() {
   const renderedSnippet = selectedReviewSnippet
     ? withLineNumbers(selectedReviewSnippet.text, selectedReviewSnippet.lineStart)
     : "No file loaded.";
+  const visibleProposals = useMemo(() => {
+    if (proposalView === "all") return proposals;
+    if (proposalView === "historical") {
+      return proposals.filter((proposal) => HISTORICAL_STATES.has(proposal.state));
+    }
+    return proposals.filter((proposal) => !HISTORICAL_STATES.has(proposal.state));
+  }, [proposals, proposalView]);
+  const proposalRows = useMemo(() => {
+    return visibleProposals.map((proposal) => ({
+      proposal,
+      bundleRef: extractProposalBundleRef(proposal, network?.dappRegistry),
+    }));
+  }, [visibleProposals, network?.dappRegistry]);
 
   return (
     <div className="studio-shell">
@@ -659,9 +756,14 @@ export function App() {
 
         <SectionCard
           title="Proposals"
-          subtitle="Loaded from deploy block onward"
+          subtitle="Loaded from deploy block onward, including historical and executed proposals"
           right={
             <div className="studio-inline-controls">
+              <select value={proposalView} onChange={(e) => setProposalView(e.target.value as "all" | "active" | "historical")}>
+                <option value="all">view: all</option>
+                <option value="active">view: active/open</option>
+                <option value="historical">view: historical/executed</option>
+              </select>
               <select value={voteSupport} onChange={(e) => setVoteSupport(e.target.value as "for" | "against" | "abstain")}>
                 <option value="for">vote: for</option>
                 <option value="against">vote: against</option>
@@ -682,21 +784,30 @@ export function App() {
                   <th>ID</th>
                   <th>State</th>
                   <th>Proposer</th>
+                  <th>Bundle CID</th>
                   <th>Description</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {proposals.map((proposal) => (
+                {proposalRows.map(({ proposal, bundleRef }) => (
                   <tr key={proposal.proposalId.toString()}>
                     <td>#{proposal.proposalId.toString()}</td>
                     <td>
                       <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
                     </td>
                     <td>{shortHash(proposal.proposer)}</td>
+                    <td>{bundleRef?.rootCid ? <code>{shortHash(bundleRef.rootCid)}</code> : "-"}</td>
                     <td>{proposal.description}</td>
                     <td>
                       <div className="studio-actions">
+                        <button
+                          className="btn"
+                          onClick={() => onReviewProposalBundle(proposal)}
+                          disabled={!bundleRef?.rootCid || reviewLoading}
+                        >
+                          Review Bundle
+                        </button>
                         <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
                           Vote
                         </button>
@@ -718,10 +829,10 @@ export function App() {
                     </td>
                   </tr>
                 ))}
-                {proposals.length === 0 ? (
+                {proposalRows.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="studio-empty-cell">
-                      No proposals found from deploy block onward.
+                    <td colSpan={6} className="studio-empty-cell">
+                      No proposals found for this filter.
                     </td>
                   </tr>
                 ) : null}

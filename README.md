@@ -10,6 +10,8 @@ Current scope:
    - load manifest-scoped file listings
    - browse and filter files
    - open safe snippet windows with pagination and file metadata
+   - load bundle CIDs directly from governance proposals
+5. View old/historical (including executed) DAO proposals.
 
 For strategy and security design details, see `design.md`.
 For implementation sequencing across repos, see `plan.md`.
