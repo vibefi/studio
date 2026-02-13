@@ -30,6 +30,11 @@ function getNetwork(chainId: number | null): NetworkAddresses | null {
   return ADDRESSES[String(chainId)] ?? null;
 }
 
+function txUrl(chainId: number | null, hash: string) {
+  if (chainId === 11155111) return `https://sepolia.etherscan.io/tx/${hash}`;
+  return "";
+}
+
 function blockFrom(network: NetworkAddresses | null): bigint {
   return BigInt(network?.deployBlock ?? 0);
 }
