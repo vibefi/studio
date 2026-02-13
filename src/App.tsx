@@ -34,22 +34,56 @@ function blockFrom(network: NetworkAddresses | null): bigint {
   return BigInt(network?.deployBlock ?? 0);
 }
 
-function Section(props: { title: string; children: ReactNode }) {
+function parseDappId(value: string): bigint {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("dapp id is required");
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error("dapp id must be an unsigned integer");
+  }
+  return BigInt(trimmed);
+}
+
+function SectionCard(props: { title: string; subtitle?: string; right?: ReactNode; children: ReactNode }) {
   return (
-    <section style={{ border: "1px solid #d8d8d8", borderRadius: 8, padding: 14, marginBottom: 12 }}>
-      <h2 style={{ margin: "0 0 10px", fontSize: 18 }}>{props.title}</h2>
-      {props.children}
+    <section className="studio-card">
+      <div className="studio-card-head">
+        <div>
+          <h2>{props.title}</h2>
+          {props.subtitle ? <p>{props.subtitle}</p> : null}
+        </div>
+        {props.right ? <div>{props.right}</div> : null}
+      </div>
+      <div className="studio-card-body">{props.children}</div>
     </section>
   );
 }
 
-function row(label: string, value: React.ReactNode) {
+function Field(props: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 8, marginBottom: 6 }}>
-      <div style={{ color: "#666" }}>{label}</div>
-      <div>{value}</div>
-    </div>
+    <label className="studio-field">
+      <div className="studio-field-label">{props.label}</div>
+      {props.children}
+      {props.hint ? <div className="studio-field-hint">{props.hint}</div> : null}
+    </label>
   );
+}
+
+function kv(label: string, value: ReactNode) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </>
+  );
+}
+
+function proposalStateClass(state: string): string {
+  if (state === "Succeeded" || state === "Executed") return "state-good";
+  if (state === "Queued" || state === "Active" || state === "Pending") return "state-live";
+  if (state === "Defeated" || state === "Canceled" || state === "Expired") return "state-bad";
+  return "state-neutral";
 }
 
 export function App() {
@@ -162,7 +196,7 @@ export function App() {
         clients.network.dappRegistry,
         clients.account,
         {
-          dappId: BigInt(upgradeDappId),
+          dappId: parseDappId(upgradeDappId),
           rootCid: upgradeRootCid,
           name: upgradeName,
           dappVersion: upgradeVersion,
@@ -227,7 +261,7 @@ export function App() {
   async function onLoadSnippet() {
     try {
       setStatus("Loading snippet from injected vibefiIpfs...");
-      const result = await ipfsReadSnippet(reviewCid, reviewPath, 1, 220) as { text?: string };
+      const result = (await ipfsReadSnippet(reviewCid, reviewPath, 1, 220)) as { text?: string };
       setSnippet(result.text ?? "");
       setStatus("Snippet loaded");
     } catch (err) {
@@ -237,137 +271,255 @@ export function App() {
   }
 
   const canAct = !!(publicClient && walletClient && account && network);
+  const latestTxUrl = txHash ? txUrl(chainId, txHash) : "";
 
   return (
-    <main style={{ maxWidth: 1200, margin: "0 auto", padding: 16, fontFamily: "system-ui, sans-serif" }}>
-      <h1 style={{ marginTop: 0 }}>VibeFi Studio</h1>
-      <p style={{ marginTop: 4, color: "#555" }}>
-        Governance entrypoint for publish/upgrade proposals, voting, queue/execute, and registry verification.
-      </p>
+    <div className="studio-shell">
+      <div className="studio-atmosphere" aria-hidden="true" />
+      <main className="studio-page">
+        <header className="studio-hero">
+          <div>
+            <div className="studio-eyebrow">VibeFi DAO Console</div>
+            <h1>Studio</h1>
+            <p>
+              Governance entrypoint for publish/upgrade proposals, voting, queue/execute operations, registry
+              verification, and safe IPFS snippet review.
+            </p>
+          </div>
+          <div className="studio-hero-actions">
+            <button className="btn btn-primary" onClick={onConnect}>
+              Connect Wallet
+            </button>
+            <button className="btn" onClick={refreshGovernanceData} disabled={!canAct}>
+              Refresh Data
+            </button>
+          </div>
+          <div className="studio-status" role="status">
+            <span className="pill">{canAct ? "ready" : "disconnected"}</span>
+            <span>{status}</span>
+          </div>
+        </header>
 
-      <Section title="Connection">
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <button onClick={onConnect}>Connect Wallet</button>
-          <button onClick={refreshGovernanceData} disabled={!canAct}>Refresh</button>
-        </div>
-        {row("Account", account ? shortHash(account) : "not connected")}
-        {row("Chain", chainId ?? "unknown")}
-        {row("Network", network?.name ?? "unsupported")}
-        {row("Governor", network?.vfiGovernor ?? "n/a")}
-        {row("Registry", network?.dappRegistry ?? "n/a")}
-        {row("Status", status)}
-        {txHash && row("Last tx", txHash)}
-      </Section>
+        <section className="studio-grid-two">
+          <SectionCard title="Connection" subtitle="Active network and contract context">
+            <dl className="studio-kv">
+              {kv("Account", account ? shortHash(account) : "not connected")}
+              {kv("Chain", chainId ?? "unknown")}
+              {kv("Network", network?.name ?? "unsupported")}
+              {kv("Deploy block", network?.deployBlock ?? "n/a")}
+              {kv("Governor", network?.vfiGovernor ?? "n/a")}
+              {kv("Registry", network?.dappRegistry ?? "n/a")}
+              {txHash
+                ? kv(
+                    "Last tx",
+                    latestTxUrl ? (
+                      <a href={latestTxUrl} target="_blank" rel="noreferrer">
+                        {shortHash(txHash)}
+                      </a>
+                    ) : (
+                      shortHash(txHash)
+                    )
+                  )
+                : null}
+            </dl>
+          </SectionCard>
 
-      <Section title="Propose Publish">
-        <div style={{ display: "grid", gap: 8 }}>
-          <input value={publishRootCid} onChange={(e) => setPublishRootCid(e.target.value)} placeholder="root CID" />
-          <input value={publishName} onChange={(e) => setPublishName(e.target.value)} placeholder="name" />
-          <input value={publishVersion} onChange={(e) => setPublishVersion(e.target.value)} placeholder="dapp version" />
-          <input value={publishDescription} onChange={(e) => setPublishDescription(e.target.value)} placeholder="description" />
-          <input value={publishProposalDescription} onChange={(e) => setPublishProposalDescription(e.target.value)} placeholder="proposal description (optional)" />
-          <button onClick={onProposePublish} disabled={!canAct}>Submit Publish Proposal</button>
-        </div>
-      </Section>
+          <SectionCard
+            title="IPFS Review"
+            subtitle="Safe snippet reads through injected vibefiIpfs"
+            right={<span className="pill">snippet only</span>}
+          >
+            <div className="studio-form-grid">
+              <Field label="CID">
+                <input value={reviewCid} onChange={(e) => setReviewCid(e.target.value)} placeholder="bafy..." />
+              </Field>
+              <Field label="Path" hint="Example: src/App.tsx">
+                <input value={reviewPath} onChange={(e) => setReviewPath(e.target.value)} placeholder="src/App.tsx" />
+              </Field>
+              <button className="btn" onClick={onLoadSnippet}>
+                Load Snippet
+              </button>
+            </div>
+            <pre className="studio-snippet">{snippet || "No snippet loaded."}</pre>
+          </SectionCard>
+        </section>
 
-      <Section title="Propose Upgrade">
-        <div style={{ display: "grid", gap: 8 }}>
-          <input value={upgradeDappId} onChange={(e) => setUpgradeDappId(e.target.value)} placeholder="dapp id" />
-          <input value={upgradeRootCid} onChange={(e) => setUpgradeRootCid(e.target.value)} placeholder="new root CID" />
-          <input value={upgradeName} onChange={(e) => setUpgradeName(e.target.value)} placeholder="name" />
-          <input value={upgradeVersion} onChange={(e) => setUpgradeVersion(e.target.value)} placeholder="dapp version" />
-          <input value={upgradeDescription} onChange={(e) => setUpgradeDescription(e.target.value)} placeholder="description" />
-          <input value={upgradeProposalDescription} onChange={(e) => setUpgradeProposalDescription(e.target.value)} placeholder="proposal description (optional)" />
-          <button onClick={onProposeUpgrade} disabled={!canAct}>Submit Upgrade Proposal</button>
-        </div>
-      </Section>
+        <section className="studio-grid-two">
+          <SectionCard title="Propose Publish" subtitle="Create governance proposal for publishDapp">
+            <div className="studio-form-grid">
+              <Field label="Root CID">
+                <input value={publishRootCid} onChange={(e) => setPublishRootCid(e.target.value)} placeholder="bafy..." />
+              </Field>
+              <Field label="Name">
+                <input value={publishName} onChange={(e) => setPublishName(e.target.value)} placeholder="VibeFi Studio" />
+              </Field>
+              <Field label="Version">
+                <input value={publishVersion} onChange={(e) => setPublishVersion(e.target.value)} placeholder="0.0.1" />
+              </Field>
+              <Field label="Description">
+                <input
+                  value={publishDescription}
+                  onChange={(e) => setPublishDescription(e.target.value)}
+                  placeholder="Main governance frontend"
+                />
+              </Field>
+              <Field label="Proposal Description">
+                <input
+                  value={publishProposalDescription}
+                  onChange={(e) => setPublishProposalDescription(e.target.value)}
+                  placeholder="optional"
+                />
+              </Field>
+              <button className="btn btn-primary" onClick={onProposePublish} disabled={!canAct}>
+                Submit Publish Proposal
+              </button>
+            </div>
+          </SectionCard>
 
-      <Section title="Proposals (Deploy Block Onward)">
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <select value={voteSupport} onChange={(e) => setVoteSupport(e.target.value as "for" | "against" | "abstain")}>
-            <option value="for">for</option>
-            <option value="against">against</option>
-            <option value="abstain">abstain</option>
-          </select>
-          <input value={voteReason} onChange={(e) => setVoteReason(e.target.value)} placeholder="vote reason (optional)" />
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>ID</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>State</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Proposer</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Description</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {proposals.map((proposal) => (
-                <tr key={proposal.proposalId.toString()}>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 0" }}>{proposal.proposalId.toString()}</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>{proposal.state}</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>{shortHash(proposal.proposer)}</td>
-                  <td style={{ borderBottom: "1px solid #eee", maxWidth: 420 }}>{proposal.description}</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <button onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>Vote</button>
-                      <button onClick={() => onQueue(proposal)} disabled={!canAct || proposal.state !== "Succeeded"}>Queue</button>
-                      <button onClick={() => onExecute(proposal)} disabled={!canAct || proposal.state !== "Queued"}>Execute</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {proposals.length === 0 && (
+          <SectionCard title="Propose Upgrade" subtitle="Create governance proposal for upgradeDapp">
+            <div className="studio-form-grid">
+              <Field label="Dapp ID" hint="Unsigned integer">
+                <input value={upgradeDappId} onChange={(e) => setUpgradeDappId(e.target.value)} placeholder="1" />
+              </Field>
+              <Field label="New Root CID">
+                <input value={upgradeRootCid} onChange={(e) => setUpgradeRootCid(e.target.value)} placeholder="bafy..." />
+              </Field>
+              <Field label="Name">
+                <input value={upgradeName} onChange={(e) => setUpgradeName(e.target.value)} placeholder="VibeFi Studio" />
+              </Field>
+              <Field label="Version">
+                <input value={upgradeVersion} onChange={(e) => setUpgradeVersion(e.target.value)} placeholder="0.0.2" />
+              </Field>
+              <Field label="Description">
+                <input
+                  value={upgradeDescription}
+                  onChange={(e) => setUpgradeDescription(e.target.value)}
+                  placeholder="Updated governance frontend"
+                />
+              </Field>
+              <Field label="Proposal Description">
+                <input
+                  value={upgradeProposalDescription}
+                  onChange={(e) => setUpgradeProposalDescription(e.target.value)}
+                  placeholder="optional"
+                />
+              </Field>
+              <button className="btn btn-primary" onClick={onProposeUpgrade} disabled={!canAct}>
+                Submit Upgrade Proposal
+              </button>
+            </div>
+          </SectionCard>
+        </section>
+
+        <SectionCard
+          title="Proposals"
+          subtitle="Loaded from deploy block onward"
+          right={
+            <div className="studio-inline-controls">
+              <select value={voteSupport} onChange={(e) => setVoteSupport(e.target.value as "for" | "against" | "abstain")}>
+                <option value="for">vote: for</option>
+                <option value="against">vote: against</option>
+                <option value="abstain">vote: abstain</option>
+              </select>
+              <input
+                value={voteReason}
+                onChange={(e) => setVoteReason(e.target.value)}
+                placeholder="vote reason (optional)"
+              />
+            </div>
+          }
+        >
+          <div className="studio-table-wrap">
+            <table className="studio-table">
+              <thead>
                 <tr>
-                  <td colSpan={5} style={{ padding: "12px 0", color: "#777" }}>No proposals found from deploy block onward.</td>
+                  <th>ID</th>
+                  <th>State</th>
+                  <th>Proposer</th>
+                  <th>Description</th>
+                  <th>Actions</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Section>
+              </thead>
+              <tbody>
+                {proposals.map((proposal) => (
+                  <tr key={proposal.proposalId.toString()}>
+                    <td>#{proposal.proposalId.toString()}</td>
+                    <td>
+                      <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
+                    </td>
+                    <td>{shortHash(proposal.proposer)}</td>
+                    <td>{proposal.description}</td>
+                    <td>
+                      <div className="studio-actions">
+                        <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
+                          Vote
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() => onQueue(proposal)}
+                          disabled={!canAct || proposal.state !== "Succeeded"}
+                        >
+                          Queue
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() => onExecute(proposal)}
+                          disabled={!canAct || proposal.state !== "Queued"}
+                        >
+                          Execute
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {proposals.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="studio-empty-cell">
+                      No proposals found from deploy block onward.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </SectionCard>
 
-      <Section title="Registry Verification (Step 7)">
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Dapp</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Version ID</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Name/Version</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Status</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>Root CID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {dapps.map((item) => (
-                <tr key={`${item.dappId.toString()}-${item.versionId.toString()}`}>
-                  <td style={{ borderBottom: "1px solid #eee", padding: "8px 0" }}>#{item.dappId.toString()}</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>{item.versionId.toString()}</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>{item.name} ({item.version})</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>{item.status}</td>
-                  <td style={{ borderBottom: "1px solid #eee" }}>{item.rootCid || "-"}</td>
-                </tr>
-              ))}
-              {dapps.length === 0 && (
+        <SectionCard title="Registry Verification" subtitle="Dapp registry state from governance updates">
+          <div className="studio-table-wrap">
+            <table className="studio-table">
+              <thead>
                 <tr>
-                  <td colSpan={5} style={{ padding: "12px 0", color: "#777" }}>No dapp registry entries found.</td>
+                  <th>Dapp</th>
+                  <th>Version ID</th>
+                  <th>Name/Version</th>
+                  <th>Status</th>
+                  <th>Root CID</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-
-      <Section title="IPFS Code Review (Safe Snippet View)">
-        <div style={{ display: "grid", gap: 8 }}>
-          <input value={reviewCid} onChange={(e) => setReviewCid(e.target.value)} placeholder="CID" />
-          <input value={reviewPath} onChange={(e) => setReviewPath(e.target.value)} placeholder="path (e.g. src/App.tsx)" />
-          <button onClick={onLoadSnippet}>Load Snippet via vibefiIpfs</button>
-          <pre style={{ background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto", whiteSpace: "pre-wrap" }}>{snippet}</pre>
-        </div>
-      </Section>
-    </main>
+              </thead>
+              <tbody>
+                {dapps.map((item) => (
+                  <tr key={`${item.dappId.toString()}-${item.versionId.toString()}`}>
+                    <td>#{item.dappId.toString()}</td>
+                    <td>{item.versionId.toString()}</td>
+                    <td>
+                      {item.name} ({item.version})
+                    </td>
+                    <td>{item.status}</td>
+                    <td>{item.rootCid || "-"}</td>
+                  </tr>
+                ))}
+                {dapps.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="studio-empty-cell">
+                      No dapp registry entries found.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </SectionCard>
+      </main>
+    </div>
   );
 }
