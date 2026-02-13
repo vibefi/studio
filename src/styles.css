@@ -374,6 +374,152 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.studio-review-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: end;
+}
+
+.studio-review-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+}
+
+.studio-review-files {
+  border: 1px solid rgba(156, 214, 255, 0.26);
+  border-radius: 12px;
+  background: rgba(8, 18, 32, 0.65);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 430px;
+}
+
+.studio-review-files-head {
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid rgba(156, 214, 255, 0.2);
+}
+
+.studio-review-file-list {
+  overflow: auto;
+  display: grid;
+  align-content: start;
+}
+
+.studio-review-file-btn {
+  border: 0;
+  border-bottom: 1px solid rgba(128, 185, 228, 0.14);
+  background: transparent;
+  color: var(--text-0);
+  font-family: var(--mono);
+  text-align: left;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.studio-review-file-btn:hover:not(:disabled) {
+  background: rgba(27, 52, 79, 0.6);
+}
+
+.studio-review-file-btn.active {
+  background: rgba(38, 79, 113, 0.65);
+}
+
+.studio-review-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-review-file-size {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.studio-badge-code,
+.studio-badge-data {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.studio-badge-code {
+  background: rgba(63, 184, 171, 0.28);
+  color: #b8ffef;
+}
+
+.studio-badge-data {
+  background: rgba(136, 166, 203, 0.24);
+  color: #cde8ff;
+}
+
+.studio-review-empty {
+  padding: 14px 10px;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+}
+
+.studio-review-preview {
+  border: 1px solid rgba(156, 214, 255, 0.26);
+  border-radius: 12px;
+  background: rgba(8, 18, 32, 0.65);
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.studio-review-meta {
+  display: grid;
+  gap: 6px;
+  border-bottom: 1px solid rgba(156, 214, 255, 0.2);
+  padding-bottom: 8px;
+}
+
+.studio-review-meta-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 110px minmax(0, 1fr);
+}
+
+.studio-review-meta-key {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.studio-review-meta-value {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.studio-review-pagination {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.studio-review-snippet {
+  min-height: 340px;
+  max-height: 470px;
+  margin: 0;
+}
+
 @media (max-width: 1020px) {
   .studio-grid-two {
     grid-template-columns: 1fr;
@@ -387,6 +533,18 @@ button:focus-visible {
 
   .studio-card-head {
     flex-direction: column;
+  }
+
+  .studio-review-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .studio-review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .studio-review-files {
+    min-height: 250px;
   }
 }
 

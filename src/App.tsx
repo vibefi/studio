@@ -11,7 +11,14 @@ import {
   queueProposal,
 } from "./eth/governor";
 import { listDapps, proposePublish, proposeUpgrade, type DappRow } from "./eth/registry";
-import { ipfsReadSnippet } from "./ipfs/client";
+import {
+  ipfsHead,
+  ipfsList,
+  ipfsReadSnippet,
+  type IpfsHeadResult,
+  type IpfsListFile,
+  type IpfsSnippetResult,
+} from "./ipfs/client";
 
 type NetworkAddresses = {
   name?: string;
@@ -91,6 +98,58 @@ function proposalStateClass(state: string): string {
   return "state-neutral";
 }
 
+type ReviewFile = IpfsListFile & {
+  isCode: boolean;
+};
+
+const CODE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "json",
+  "sol",
+  "rs",
+  "toml",
+  "css",
+  "scss",
+  "md",
+  "txt",
+  "yaml",
+  "yml",
+  "html",
+  "sh",
+]);
+
+const SNIPPET_PAGE_LINES = 180;
+
+function extensionFor(path: string): string {
+  const trimmed = path.trim();
+  const dotIndex = trimmed.lastIndexOf(".");
+  if (dotIndex < 0 || dotIndex === trimmed.length - 1) return "";
+  return trimmed.slice(dotIndex + 1).toLowerCase();
+}
+
+function isLikelyCodeFile(path: string): boolean {
+  const ext = extensionFor(path);
+  return CODE_EXTENSIONS.has(ext);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KiB`;
+  return `${(kb / 1024).toFixed(2)} MiB`;
+}
+
+function withLineNumbers(text: string, startLine: number): string {
+  const lines = text ? text.split("\n") : [];
+  return lines.map((line, idx) => `${String(startLine + idx).padStart(5, " ")} | ${line}`).join("\n");
+}
+
 export function App() {
   const [account, setAccount] = useState<Address | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
@@ -120,8 +179,14 @@ export function App() {
   const [voteReason, setVoteReason] = useState("");
 
   const [reviewCid, setReviewCid] = useState("");
-  const [reviewPath, setReviewPath] = useState("src/App.tsx");
-  const [snippet, setSnippet] = useState<string>("");
+  const [reviewBasePath, setReviewBasePath] = useState("");
+  const [reviewQuery, setReviewQuery] = useState("");
+  const [reviewFiles, setReviewFiles] = useState<ReviewFile[]>([]);
+  const [selectedReviewPath, setSelectedReviewPath] = useState("");
+  const [selectedReviewHead, setSelectedReviewHead] = useState<IpfsHeadResult | null>(null);
+  const [selectedReviewSnippet, setSelectedReviewSnippet] = useState<IpfsSnippetResult | null>(null);
+  const [reviewStartLine, setReviewStartLine] = useState(1);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   const network = useMemo(() => getNetwork(chainId), [chainId]);
 
@@ -263,20 +328,101 @@ export function App() {
     }
   }
 
-  async function onLoadSnippet() {
+  async function loadSnippetWindow(path: string, startLine: number) {
     try {
-      setStatus("Loading snippet from injected vibefiIpfs...");
-      const result = (await ipfsReadSnippet(reviewCid, reviewPath, 1, 220)) as { text?: string };
-      setSnippet(result.text ?? "");
-      setStatus("Snippet loaded");
+      const cid = reviewCid.trim();
+      if (!cid) {
+        throw new Error("CID is required");
+      }
+      const normalizedPath = path.trim();
+      if (!normalizedPath) {
+        throw new Error("File path is required");
+      }
+
+      setReviewLoading(true);
+      setStatus(`Loading ${normalizedPath} from injected vibefiIpfs...`);
+      const [head, snippet] = await Promise.all([
+        ipfsHead(cid, normalizedPath),
+        ipfsReadSnippet(cid, normalizedPath, Math.max(1, startLine), SNIPPET_PAGE_LINES),
+      ]);
+
+      setSelectedReviewPath(normalizedPath);
+      setSelectedReviewHead(head);
+      setSelectedReviewSnippet(snippet);
+      setReviewStartLine(snippet.lineStart);
+      setStatus(`Loaded ${normalizedPath}:${snippet.lineStart}-${snippet.lineEnd}`);
     } catch (err) {
       setStatus((err as Error).message);
-      setSnippet("");
+    } finally {
+      setReviewLoading(false);
     }
+  }
+
+  async function onLoadReviewBundle() {
+    try {
+      const cid = reviewCid.trim();
+      if (!cid) {
+        throw new Error("CID is required");
+      }
+
+      setReviewLoading(true);
+      setStatus("Loading packaged vapp file index...");
+      const listing = await ipfsList(cid, reviewBasePath.trim());
+      const files = listing.files
+        .map((file) => ({ ...file, isCode: isLikelyCodeFile(file.path) }))
+        .sort((a, b) => Number(b.isCode) - Number(a.isCode) || a.path.localeCompare(b.path));
+      setReviewFiles(files);
+      setReviewQuery("");
+
+      if (files.length === 0) {
+        setSelectedReviewPath("");
+        setSelectedReviewHead(null);
+        setSelectedReviewSnippet(null);
+        setStatus("No files found in manifest scope");
+        return;
+      }
+      setStatus(`Loaded ${files.length} files from manifest`);
+      const firstCodeFile = files.find((file) => file.isCode) ?? files[0];
+      await loadSnippetWindow(firstCodeFile.path, 1);
+    } catch (err) {
+      setStatus((err as Error).message);
+      setReviewFiles([]);
+      setSelectedReviewPath("");
+      setSelectedReviewHead(null);
+      setSelectedReviewSnippet(null);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function onOpenTypedReviewPath() {
+    await loadSnippetWindow(selectedReviewPath, 1);
+  }
+
+  async function onOpenReviewFile(path: string) {
+    await loadSnippetWindow(path, 1);
+  }
+
+  async function onReviewPrevPage() {
+    if (!selectedReviewPath || !selectedReviewSnippet) return;
+    await loadSnippetWindow(selectedReviewPath, Math.max(1, reviewStartLine - SNIPPET_PAGE_LINES));
+  }
+
+  async function onReviewNextPage() {
+    if (!selectedReviewPath || !selectedReviewSnippet?.truncatedTail) return;
+    await loadSnippetWindow(selectedReviewPath, selectedReviewSnippet.lineEnd + 1);
   }
 
   const canAct = !!(publicClient && walletClient && account && network);
   const latestTxUrl = txHash ? txUrl(chainId, txHash) : "";
+  const filteredReviewFiles = useMemo(() => {
+    const needle = reviewQuery.trim().toLowerCase();
+    if (!needle) return reviewFiles;
+    return reviewFiles.filter((file) => file.path.toLowerCase().includes(needle));
+  }, [reviewFiles, reviewQuery]);
+  const renderedSnippet = selectedReviewSnippet
+    ? withLineNumbers(selectedReviewSnippet.text, selectedReviewSnippet.lineStart)
+    : "No file loaded.";
 
   return (
     <div className="studio-shell">
@@ -330,22 +476,117 @@ export function App() {
           </SectionCard>
 
           <SectionCard
-            title="IPFS Review"
-            subtitle="Safe snippet reads through injected vibefiIpfs"
-            right={<span className="pill">snippet only</span>}
+            title="Packaged Vapp Code Review"
+            subtitle="Manifest-aware review over injected vibefiIpfs snippet reads"
+            right={<span className="pill">safe preview</span>}
           >
-            <div className="studio-form-grid">
-              <Field label="CID">
+            <div className="studio-review-controls">
+              <Field label="Bundle CID">
                 <input value={reviewCid} onChange={(e) => setReviewCid(e.target.value)} placeholder="bafy..." />
               </Field>
-              <Field label="Path" hint="Example: src/App.tsx">
-                <input value={reviewPath} onChange={(e) => setReviewPath(e.target.value)} placeholder="src/App.tsx" />
+              <Field label="Base Path" hint="Optional path prefix to scope review">
+                <input value={reviewBasePath} onChange={(e) => setReviewBasePath(e.target.value)} placeholder="" />
               </Field>
-              <button className="btn" onClick={onLoadSnippet}>
-                Load Snippet
+              <button className="btn btn-primary" onClick={onLoadReviewBundle} disabled={reviewLoading}>
+                Load Manifest Files
               </button>
             </div>
-            <pre className="studio-snippet">{snippet || "No snippet loaded."}</pre>
+
+            <div className="studio-review-controls">
+              <Field label="Open File Path" hint="Exact path from manifest listing">
+                <input
+                  value={selectedReviewPath}
+                  onChange={(e) => setSelectedReviewPath(e.target.value)}
+                  placeholder="src/App.tsx"
+                />
+              </Field>
+              <button className="btn" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
+                Open Path
+              </button>
+            </div>
+
+            <div className="studio-review-layout">
+              <aside className="studio-review-files">
+                <div className="studio-review-files-head">
+                  <strong>Files ({filteredReviewFiles.length}/{reviewFiles.length})</strong>
+                  <input
+                    value={reviewQuery}
+                    onChange={(e) => setReviewQuery(e.target.value)}
+                    placeholder="Filter files..."
+                  />
+                </div>
+                <div className="studio-review-file-list">
+                  {filteredReviewFiles.map((file) => (
+                    <button
+                      key={file.path}
+                      className={`studio-review-file-btn ${file.path === selectedReviewPath ? "active" : ""}`}
+                      onClick={() => onOpenReviewFile(file.path)}
+                      disabled={reviewLoading}
+                    >
+                      <span className={file.isCode ? "studio-badge-code" : "studio-badge-data"}>
+                        {file.isCode ? "code" : "data"}
+                      </span>
+                      <span className="studio-review-file-path">{file.path}</span>
+                      <span className="studio-review-file-size">{formatBytes(file.bytes)}</span>
+                    </button>
+                  ))}
+                  {filteredReviewFiles.length === 0 ? (
+                    <div className="studio-review-empty">No files match the current filter.</div>
+                  ) : null}
+                </div>
+              </aside>
+
+              <section className="studio-review-preview">
+                <div className="studio-review-meta">
+                  <div className="studio-review-meta-row">
+                    <span className="studio-review-meta-key">Path</span>
+                    <span className="studio-review-meta-value">{selectedReviewPath || "-"}</span>
+                  </div>
+                  <div className="studio-review-meta-row">
+                    <span className="studio-review-meta-key">Range</span>
+                    <span className="studio-review-meta-value">
+                      {selectedReviewSnippet
+                        ? `${selectedReviewSnippet.lineStart}-${selectedReviewSnippet.lineEnd}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="studio-review-meta-row">
+                    <span className="studio-review-meta-key">Size</span>
+                    <span className="studio-review-meta-value">
+                      {selectedReviewHead ? formatBytes(selectedReviewHead.size) : "-"}
+                    </span>
+                  </div>
+                  <div className="studio-review-meta-row">
+                    <span className="studio-review-meta-key">Content-Type</span>
+                    <span className="studio-review-meta-value">{selectedReviewHead?.contentType ?? "-"}</span>
+                  </div>
+                  <div className="studio-review-meta-row">
+                    <span className="studio-review-meta-key">Flags</span>
+                    <span className="studio-review-meta-value">
+                      {selectedReviewSnippet?.hasBidiControls ? "bidi-control-chars-detected" : "none"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="studio-review-pagination">
+                  <button
+                    className="btn"
+                    onClick={onReviewPrevPage}
+                    disabled={reviewLoading || !selectedReviewSnippet || selectedReviewSnippet.lineStart <= 1}
+                  >
+                    Previous Lines
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={onReviewNextPage}
+                    disabled={reviewLoading || !selectedReviewSnippet || !selectedReviewSnippet.truncatedTail}
+                  >
+                    Next Lines
+                  </button>
+                </div>
+                <pre className="studio-snippet studio-review-snippet">{renderedSnippet}</pre>
+              </section>
+            </div>
           </SectionCard>
         </section>
 
