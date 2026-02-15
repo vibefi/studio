@@ -491,6 +491,8 @@ button:focus-visible {
   gap: 12px;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   align-items: stretch;
+  min-height: 430px;
+  height: clamp(430px, 68vh, 760px);
 }
 
 .studio-review-files {
@@ -500,7 +502,8 @@ button:focus-visible {
   overflow: hidden;
   display: grid;
   grid-template-rows: auto 1fr;
-  min-height: 430px;
+  min-height: 0;
+  height: 100%;
 }
 
 .studio-review-files-head {
@@ -587,7 +590,8 @@ button:focus-visible {
   grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   padding: 10px;
-  min-height: 430px;
+  min-height: 0;
+  height: 100%;
 }
 
 .studio-review-meta {
@@ -625,7 +629,8 @@ button:focus-visible {
 .studio-review-snippet {
   min-height: 0;
   height: 100%;
-  max-height: none;
+  max-height: 100%;
+  overflow: auto;
   margin: 0;
 }
 
