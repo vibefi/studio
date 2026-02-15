@@ -1258,14 +1258,14 @@ export function App() {
             ) : (
               <>
                 <div className="studio-review-open-controls">
-                  <Field label="Open File Path" hint="Exact path from manifest listing">
+                  <Field label="Open File Path">
                     <input
                       value={selectedReviewPath}
                       onChange={(e) => setSelectedReviewPath(e.target.value)}
                       placeholder="src/App.tsx"
                     />
                   </Field>
-                  <button className="btn btn-primary" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
+                  <button className="btn btn-primary studio-review-open-btn" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
                     Open Path
                   </button>
                 </div>

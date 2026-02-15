@@ -437,8 +437,14 @@ button:focus-visible {
 .studio-review-open-controls {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr) fit-content(160px);
+  align-items: start;
+}
+
+.studio-review-open-btn {
+  width: 100%;
+  white-space: nowrap;
+  align-self: end;
 }
 
 .studio-progress {
@@ -484,6 +490,7 @@ button:focus-visible {
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  align-items: stretch;
 }
 
 .studio-review-files {
@@ -577,8 +584,10 @@ button:focus-visible {
   border-radius: 12px;
   background: rgba(8, 18, 32, 0.65);
   display: grid;
-  gap: 10px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
   padding: 10px;
+  min-height: 430px;
 }
 
 .studio-review-meta {
@@ -614,9 +623,15 @@ button:focus-visible {
 }
 
 .studio-review-snippet {
-  min-height: 340px;
-  max-height: 470px;
+  min-height: 0;
+  height: 100%;
+  max-height: none;
   margin: 0;
+}
+
+.studio-review-preview .studio-review-meta {
+  gap: 2px;
+  padding-bottom: 4px;
 }
 
 .studio-toast {
@@ -660,10 +675,6 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .studio-review-open-controls {
-    grid-template-columns: 1fr;
-  }
-
   .studio-review-layout {
     grid-template-columns: 1fr;
   }
@@ -690,6 +701,10 @@ button:focus-visible {
   .studio-topbar-wallet {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .studio-review-open-controls {
+    grid-template-columns: 1fr;
   }
 
   .studio-kv {
