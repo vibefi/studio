@@ -34,6 +34,7 @@ import {
   ipfsReadSnippet,
   type IpfsHeadResult,
   type IpfsListFile,
+  type IpfsProgressEvent,
   type IpfsSnippetResult,
 } from "./ipfs/client";
 
@@ -189,6 +190,11 @@ function formatBytes(bytes: number): string {
   return `${(kb / 1024).toFixed(2)} MiB`;
 }
 
+function clampProgressPercent(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
 function withLineNumbers(text: string, startLine: number): string {
   const lines = text ? text.split("\n") : [];
   return lines.map((line, idx) => `${String(startLine + idx).padStart(5, " ")} | ${line}`).join("\n");
@@ -282,6 +288,9 @@ export function App() {
   const [selectedReviewSnippet, setSelectedReviewSnippet] = useState<IpfsSnippetResult | null>(null);
   const [reviewStartLine, setReviewStartLine] = useState(1);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewProgressPercent, setReviewProgressPercent] = useState(0);
+  const [reviewProgressMessage, setReviewProgressMessage] = useState("");
+  const [reviewProgressIpcId, setReviewProgressIpcId] = useState<number | null>(null);
   const lastAutoRefreshKeyRef = useRef<string | null>(null);
 
   const network = useMemo(() => getNetwork(chainId), [chainId]);
@@ -489,7 +498,16 @@ export function App() {
     }
   }
 
-  async function loadSnippetWindow(path: string, startLine: number) {
+  function onIpfsProgress(progress: IpfsProgressEvent, fallbackMessage: string) {
+    setReviewProgressIpcId(progress.ipcId);
+    if (typeof progress.percent === "number") {
+      setReviewProgressPercent(clampProgressPercent(progress.percent));
+    }
+    const nextMessage = progress.message?.trim() || fallbackMessage;
+    setReviewProgressMessage(nextMessage);
+  }
+
+  async function loadSnippetWindow(path: string, startLine: number, manageLoading = true) {
     try {
       const cid = reviewCid.trim();
       if (!cid) {
@@ -500,22 +518,39 @@ export function App() {
         throw new Error("File path is required");
       }
 
-      setReviewLoading(true);
-      setStatus(`Loading ${normalizedPath} from injected vibefiIpfs...`);
-      const [head, snippet] = await Promise.all([
-        ipfsHead(cid, normalizedPath),
-        ipfsReadSnippet(cid, normalizedPath, Math.max(1, startLine), SNIPPET_PAGE_LINES),
-      ]);
+      const loadingMessage = `Loading ${normalizedPath} from injected IPFS...`;
+      if (manageLoading) {
+        setReviewLoading(true);
+        setReviewProgressPercent(0);
+        setReviewProgressMessage(loadingMessage);
+        setReviewProgressIpcId(null);
+      }
+      setStatus(loadingMessage);
+
+      const progress = (event: IpfsProgressEvent) => onIpfsProgress(event, loadingMessage);
+      const head = await ipfsHead(cid, normalizedPath, { onProgress: progress });
+      const snippet = await ipfsReadSnippet(
+        cid,
+        normalizedPath,
+        Math.max(1, startLine),
+        SNIPPET_PAGE_LINES,
+        undefined,
+        { onProgress: progress }
+      );
 
       setSelectedReviewPath(normalizedPath);
       setSelectedReviewHead(head);
       setSelectedReviewSnippet(snippet);
       setReviewStartLine(snippet.lineStart);
+      setReviewProgressPercent(100);
+      setReviewProgressMessage(`Loaded ${normalizedPath}`);
       setStatus(`Loaded ${normalizedPath}:${snippet.lineStart}-${snippet.lineEnd}`);
     } catch (err) {
       setStatus((err as Error).message);
     } finally {
-      setReviewLoading(false);
+      if (manageLoading) {
+        setReviewLoading(false);
+      }
     }
   }
 
@@ -526,8 +561,13 @@ export function App() {
       }
 
       setReviewLoading(true);
+      setReviewProgressPercent(0);
+      setReviewProgressMessage("Loading packaged vapp file index...");
+      setReviewProgressIpcId(null);
       setStatus("Loading packaged vapp file index...");
-      const listing = await ipfsList(cid, basePath);
+      const listing = await ipfsList(cid, basePath, {
+        onProgress: (progress) => onIpfsProgress(progress, "Loading packaged vapp file index..."),
+      });
       const files = listing.files
         .map((file) => ({ ...file, isCode: isLikelyCodeFile(file.path) }))
         .sort((a, b) => Number(b.isCode) - Number(a.isCode) || a.path.localeCompare(b.path));
@@ -538,12 +578,16 @@ export function App() {
         setSelectedReviewPath("");
         setSelectedReviewHead(null);
         setSelectedReviewSnippet(null);
+        setReviewProgressPercent(100);
+        setReviewProgressMessage("Manifest loaded. No files found in scope.");
         setStatus("No files found in manifest scope");
         return;
       }
       setStatus(`Loaded ${files.length} files from manifest`);
       const firstCodeFile = files.find((file) => file.isCode) ?? files[0];
-      await loadSnippetWindow(firstCodeFile.path, 1);
+      await loadSnippetWindow(firstCodeFile.path, 1, false);
+      setReviewProgressPercent(100);
+      setReviewProgressMessage("Bundle review workspace ready.");
     } catch (err) {
       setStatus((err as Error).message);
       setReviewFiles([]);
@@ -1103,6 +1147,23 @@ export function App() {
                 Load Manifest Files
               </button>
             </div>
+            {reviewLoading ? (
+              <div className="studio-progress" role="status" aria-live="polite">
+                <div className="studio-progress-head">
+                  <span>{reviewProgressMessage || "Loading review workspace..."}</span>
+                  <span>{clampProgressPercent(reviewProgressPercent)}%</span>
+                </div>
+                <div className="studio-progress-track">
+                  <div
+                    className="studio-progress-bar"
+                    style={{ width: `${clampProgressPercent(reviewProgressPercent)}%` }}
+                  />
+                </div>
+                {reviewProgressIpcId !== null ? (
+                  <div className="studio-progress-meta">IPC #{reviewProgressIpcId}</div>
+                ) : null}
+              </div>
+            ) : null}
 
             {reviewWorkspacePage === "summary" ? (
               <>

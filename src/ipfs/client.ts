@@ -3,6 +3,22 @@ type IpfsRequestArgs = {
   params?: unknown[];
 };
 
+type IpfsProgressHandler = (payload: unknown) => void;
+
+export type IpfsProgressEvent = {
+  ipcId: number;
+  method?: string;
+  phase?: string;
+  percent?: number;
+  message?: string;
+  cid?: string;
+  path?: string;
+};
+
+export type IpfsRequestOptions = {
+  onProgress?: (event: IpfsProgressEvent) => void;
+};
+
 export type IpfsListFile = {
   path: string;
   bytes: number;
@@ -33,34 +49,95 @@ export type IpfsSnippetResult = {
   hasBidiControls: boolean;
 };
 
+type IpfsRequestProvider = {
+  request: (args: IpfsRequestArgs) => Promise<unknown>;
+};
+
+type IpfsProgressProvider = IpfsRequestProvider & {
+  requestWithId: (args: IpfsRequestArgs) => { ipcId: number; response: Promise<unknown> };
+  on: (event: "progress", handler: IpfsProgressHandler) => void;
+  off: (event: "progress", handler: IpfsProgressHandler) => void;
+};
+
 declare global {
   interface Window {
-    vibefiIpfs?: {
-      request: (args: IpfsRequestArgs) => Promise<unknown>;
-    };
+    ipfs?: Partial<IpfsProgressProvider>;
+    vibefiIpfs?: IpfsRequestProvider;
   }
 }
 
-function provider() {
-  const ipfs = window.vibefiIpfs;
-  if (!ipfs?.request) {
-    throw new Error("No injected vibefiIpfs provider found");
+function baseProvider(): IpfsRequestProvider {
+  const provider = window.ipfs ?? window.vibefiIpfs;
+  if (!provider?.request) {
+    throw new Error("No injected IPFS provider found");
   }
-  return ipfs;
+  return provider as IpfsRequestProvider;
 }
 
-export async function ipfsList(cid: string, path = "") {
-  return (await provider().request({
-    method: "vibefi_ipfsList",
-    params: [cid, path],
-  })) as IpfsListResult;
+function progressProvider(): IpfsProgressProvider | null {
+  const provider = window.ipfs;
+  if (!provider?.request || !provider.requestWithId || !provider.on || !provider.off) {
+    return null;
+  }
+  return provider as IpfsProgressProvider;
 }
 
-export async function ipfsHead(cid: string, path = "") {
-  return (await provider().request({
-    method: "vibefi_ipfsHead",
-    params: [cid, path],
-  })) as IpfsHeadResult;
+function normalizeProgressPayload(payload: unknown): IpfsProgressEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const candidate = payload as Record<string, unknown>;
+  if (typeof candidate.ipcId !== "number") return null;
+  return {
+    ipcId: candidate.ipcId,
+    method: typeof candidate.method === "string" ? candidate.method : undefined,
+    phase: typeof candidate.phase === "string" ? candidate.phase : undefined,
+    percent: typeof candidate.percent === "number" ? candidate.percent : undefined,
+    message: typeof candidate.message === "string" ? candidate.message : undefined,
+    cid: typeof candidate.cid === "string" ? candidate.cid : undefined,
+    path: typeof candidate.path === "string" ? candidate.path : undefined,
+  };
+}
+
+async function requestIpfs<T>(args: IpfsRequestArgs, options?: IpfsRequestOptions): Promise<T> {
+  const onProgress = options?.onProgress;
+  const trackedProvider = onProgress ? progressProvider() : null;
+  if (!onProgress || !trackedProvider) {
+    return (await baseProvider().request(args)) as T;
+  }
+
+  const { ipcId, response } = trackedProvider.requestWithId(args);
+  const handler: IpfsProgressHandler = (payload) => {
+    const progress = normalizeProgressPayload(payload);
+    if (!progress || progress.ipcId !== ipcId) return;
+    onProgress(progress);
+  };
+
+  trackedProvider.on("progress", handler);
+  onProgress({ ipcId, phase: "queued", percent: 0, message: "Request queued" });
+  try {
+    return (await response) as T;
+  } finally {
+    trackedProvider.off("progress", handler);
+  }
+}
+
+export async function ipfsList(cid: string, path = "", options?: IpfsRequestOptions) {
+  return await requestIpfs<IpfsListResult>(
+    {
+      method: "vibefi_ipfsList",
+      params: [cid, path],
+    },
+    options
+  );
+}
+
+export async function ipfsHead(cid: string, path = "", options?: IpfsRequestOptions) {
+  return await requestIpfs<IpfsHeadResult>(
+    {
+      method: "vibefi_ipfsHead",
+      params: [cid, path],
+    },
+    options
+  );
 }
 
 export async function ipfsReadSnippet(
@@ -68,10 +145,14 @@ export async function ipfsReadSnippet(
   path: string,
   startLine = 1,
   maxLines = 200,
-  endLine?: number
+  endLine?: number,
+  options?: IpfsRequestOptions
 ) {
-  return (await provider().request({
-    method: "vibefi_ipfsRead",
-    params: [cid, path, { as: "snippet", startLine, maxLines, endLine }],
-  })) as IpfsSnippetResult;
+  return await requestIpfs<IpfsSnippetResult>(
+    {
+      method: "vibefi_ipfsRead",
+      params: [cid, path, { as: "snippet", startLine, maxLines, endLine }],
+    },
+    options
+  );
 }
