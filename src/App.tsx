@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   decodeFunctionData,
   hexToString,
@@ -12,7 +12,14 @@ import {
 import addressesJson from "../addresses.json";
 import dappRegistryAbi from "../abis/DappRegistry.json";
 import { shortHash } from "./env";
-import { buildPublicClient, buildWalletClient, connectWallet } from "./eth/clients";
+import {
+  buildPublicClient,
+  buildWalletClient,
+  connectWallet,
+  getChainId,
+  getConnectedAccount,
+  switchToChain,
+} from "./eth/clients";
 import {
   type ProposalInfo,
   castVote,
@@ -41,10 +48,32 @@ type NetworkAddresses = {
 type AddressesMap = Record<string, NetworkAddresses>;
 
 const ADDRESSES = addressesJson as AddressesMap;
+const DEFAULT_NETWORKS: AddressesMap = {
+  "11155111": {
+    name: "Sepolia",
+    deployBlock: 10239268,
+    vfiGovernor: "0x753d33e2E61F249c87e6D33c4e04b39731776297",
+    dappRegistry: "0xFb84B57E757649Dff3870F1381C67c9097D0c67f",
+    vfiToken: "0xD11496882E083Ce67653eC655d14487030E548aC",
+  },
+};
+const RESOLVED_ADDRESSES: AddressesMap = Object.fromEntries(
+  Array.from(new Set([...Object.keys(DEFAULT_NETWORKS), ...Object.keys(ADDRESSES)])).map((chainKey) => [
+    chainKey,
+    {
+      ...(DEFAULT_NETWORKS[chainKey] ?? {}),
+      ...(ADDRESSES[chainKey] ?? {}),
+    },
+  ])
+) as AddressesMap;
+const SUPPORTED_CHAIN_IDS = Object.keys(RESOLVED_ADDRESSES)
+  .map((value) => Number.parseInt(value, 10))
+  .filter((value) => Number.isFinite(value));
+const DEFAULT_CHAIN_ID = SUPPORTED_CHAIN_IDS[0] ?? 11155111;
 
 function getNetwork(chainId: number | null): NetworkAddresses | null {
   if (!chainId) return null;
-  return ADDRESSES[String(chainId)] ?? null;
+  return RESOLVED_ADDRESSES[String(chainId)] ?? null;
 }
 
 function blockFrom(network: NetworkAddresses | null): bigint {
@@ -248,8 +277,58 @@ export function App() {
   const [selectedReviewSnippet, setSelectedReviewSnippet] = useState<IpfsSnippetResult | null>(null);
   const [reviewStartLine, setReviewStartLine] = useState(1);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const lastAutoRefreshKeyRef = useRef<string | null>(null);
 
   const network = useMemo(() => getNetwork(chainId), [chainId]);
+  const needsSupportedChain = chainId !== null && !network;
+
+  const syncInjectedWalletState = useCallback(async () => {
+    try {
+      const nextChainId = await getChainId();
+      const nextAccount = await getConnectedAccount();
+
+      setChainId(nextChainId);
+      setAccount(nextAccount);
+
+      if (nextChainId === null) {
+        setPublicClient(null);
+        setWalletClient(null);
+        return;
+      }
+
+      setPublicClient(buildPublicClient(nextChainId));
+      if (nextAccount) {
+        const wallet = await buildWalletClient(nextChainId);
+        setWalletClient(wallet);
+      } else {
+        setWalletClient(null);
+      }
+    } catch (err) {
+      setStatus((err as Error).message);
+      setWalletClient(null);
+      setPublicClient(null);
+      setAccount(null);
+      setChainId(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void syncInjectedWalletState();
+  }, [syncInjectedWalletState]);
+
+  useEffect(() => {
+    const eth = window.ethereum;
+    if (!eth?.on) return;
+    const onProviderChange = () => {
+      void syncInjectedWalletState();
+    };
+    eth.on("accountsChanged", onProviderChange);
+    eth.on("chainChanged", onProviderChange);
+    return () => {
+      eth.removeListener?.("accountsChanged", onProviderChange);
+      eth.removeListener?.("chainChanged", onProviderChange);
+    };
+  }, [syncInjectedWalletState]);
 
   async function withClients() {
     if (!publicClient || !walletClient || !account || !network) {
@@ -262,14 +341,20 @@ export function App() {
     try {
       setStatus("Connecting wallet...");
       const connected = await connectWallet();
-      const pub = buildPublicClient(connected.chainId);
-      const wallet = await buildWalletClient(connected.chainId);
-      setAccount(connected.account);
-      setChainId(connected.chainId);
-      setPublicClient(pub);
-      setWalletClient(wallet);
+      await syncInjectedWalletState();
       setStatus(`Connected ${connected.account} on chain ${connected.chainId}`);
       setTxHash(null);
+    } catch (err) {
+      setStatus((err as Error).message);
+    }
+  }
+
+  async function onSwitchToSupportedChain() {
+    try {
+      setStatus(`Switching wallet to chain ${DEFAULT_CHAIN_ID}...`);
+      await switchToChain(DEFAULT_CHAIN_ID);
+      await syncInjectedWalletState();
+      setStatus(`Switched to chain ${DEFAULT_CHAIN_ID}`);
     } catch (err) {
       setStatus((err as Error).message);
     }
@@ -278,8 +363,10 @@ export function App() {
   async function refreshGovernanceData() {
     try {
       const clients = await withClients();
-      setStatus("Refreshing proposals and registry data...");
       const fromBlock = blockFrom(clients.network);
+      setStatus(
+        `Refreshing proposals and registry data from block ${fromBlock.toString()} (gov ${clients.network.vfiGovernor}, reg ${clients.network.dappRegistry})...`
+      );
       const [nextProposals, nextDapps] = await Promise.all([
         listProposals(clients.publicClient, clients.network.vfiGovernor, fromBlock),
         listDapps(clients.publicClient, clients.network.dappRegistry, fromBlock),
@@ -291,6 +378,14 @@ export function App() {
       setStatus((err as Error).message);
     }
   }
+
+  useEffect(() => {
+    if (!(publicClient && walletClient && account && network) || chainId === null) return;
+    const key = `${account.toLowerCase()}-${chainId}`;
+    if (lastAutoRefreshKeyRef.current === key) return;
+    lastAutoRefreshKeyRef.current = key;
+    void refreshGovernanceData();
+  }, [publicClient, walletClient, account, network, chainId]);
 
   async function onProposePublish() {
     try {
@@ -510,10 +605,12 @@ export function App() {
     return proposals.filter((proposal) => !HISTORICAL_STATES.has(proposal.state));
   }, [proposals, proposalView]);
   const proposalRows = useMemo(() => {
-    return visibleProposals.map((proposal) => ({
-      proposal,
-      bundleRef: extractProposalBundleRef(proposal, network?.dappRegistry),
-    }));
+    return visibleProposals
+      .filter((proposal) => proposal && typeof proposal.proposalId === "bigint")
+      .map((proposal) => ({
+        proposal,
+        bundleRef: extractProposalBundleRef(proposal, network?.dappRegistry),
+      }));
   }, [visibleProposals, network?.dappRegistry]);
 
   return (
@@ -533,14 +630,28 @@ export function App() {
             <button className="btn btn-primary" onClick={onConnect}>
               Connect Wallet
             </button>
+            {needsSupportedChain ? (
+              <button className="btn" onClick={onSwitchToSupportedChain}>
+                Switch to Supported Chain
+              </button>
+            ) : null}
             <button className="btn" onClick={refreshGovernanceData} disabled={!canAct}>
               Refresh Data
             </button>
           </div>
           <div className="studio-status" role="status">
-            <span className="pill">{canAct ? "ready" : "disconnected"}</span>
+            <span className="pill">
+              {canAct ? "ready" : needsSupportedChain ? "wrong-chain" : "disconnected"}
+            </span>
             <span>{status}</span>
           </div>
+          {needsSupportedChain ? (
+            <div className="studio-status" role="status">
+              <span>
+                Connected to chain {chainId}. Studio supports chain {DEFAULT_CHAIN_ID} for this build.
+              </span>
+            </div>
+          ) : null}
         </header>
 
         <section className="studio-grid-two">
@@ -548,8 +659,8 @@ export function App() {
             <dl className="studio-kv">
               {kv("Account", account ? shortHash(account) : "not connected")}
               {kv("Chain", chainId ?? "unknown")}
-              {kv("Network", network?.name ?? "unsupported")}
-              {kv("Deploy block", network?.deployBlock ?? "n/a")}
+              {kv("Network", network ? (network.name ?? `Chain ${chainId}`) : "unsupported")}
+              {kv("Deploy block", blockFrom(network).toString())}
               {kv("Governor", network?.vfiGovernor ?? "n/a")}
               {kv("Registry", network?.dappRegistry ?? "n/a")}
               {txHash

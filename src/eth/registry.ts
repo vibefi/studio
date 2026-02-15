@@ -1,8 +1,11 @@
 import {
   bytesToHex,
+  decodeEventLog,
   encodeFunctionData,
   hexToString,
   isHex,
+  parseAbiItem,
+  toEventSelector,
   toBytes,
   type Address,
   type Hex,
@@ -13,6 +16,25 @@ import governorAbi from "../../abis/VfiGovernor.json";
 import dappRegistryAbi from "../../abis/DappRegistry.json";
 
 const MAX_ROOT_CID_BYTES = 4096;
+const DEFAULT_LOG_CHUNK_SIZE = 45_000n;
+const DAPP_PUBLISHED_EVENT = parseAbiItem(
+  "event DappPublished(uint256 indexed dappId, uint256 indexed versionId, bytes rootCid, address proposer)"
+);
+const DAPP_UPGRADED_EVENT = parseAbiItem(
+  "event DappUpgraded(uint256 indexed dappId, uint256 indexed fromVersionId, uint256 indexed toVersionId, bytes rootCid, address proposer)"
+);
+const DAPP_METADATA_EVENT = parseAbiItem(
+  "event DappMetadata(uint256 indexed dappId, uint256 indexed versionId, string name, string version, string description)"
+);
+const DAPP_PAUSED_EVENT = parseAbiItem(
+  "event DappPaused(uint256 indexed dappId, uint256 indexed versionId, address pausedBy, string reason)"
+);
+const DAPP_UNPAUSED_EVENT = parseAbiItem(
+  "event DappUnpaused(uint256 indexed dappId, uint256 indexed versionId, address unpausedBy, string reason)"
+);
+const DAPP_DEPRECATED_EVENT = parseAbiItem(
+  "event DappDeprecated(uint256 indexed dappId, uint256 indexed versionId, address deprecatedBy, string reason)"
+);
 
 export type DappRow = {
   dappId: bigint;
@@ -116,6 +138,17 @@ type Dapp = {
   versions: Map<string, Version>;
 };
 
+function asBigIntQuantity(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(value);
+  if (typeof value === "string") {
+    if (value.startsWith("0x") || value.startsWith("0X")) return BigInt(value);
+    const n = Number.parseInt(value, 10);
+    if (Number.isFinite(n)) return BigInt(n);
+  }
+  return 0n;
+}
+
 function decodeCid(value?: Hex): string {
   if (!value) return "";
   try {
@@ -125,6 +158,34 @@ function decodeCid(value?: Hex): string {
   }
 }
 
+async function getLogsChunked(pc: any, params: {
+  address: Address;
+  topic0: Hex;
+  fromBlock: bigint;
+}): Promise<any[]> {
+  const latestBlock = (await pc.getBlockNumber()) as bigint;
+  if (params.fromBlock > latestBlock) return [];
+
+  const logs: any[] = [];
+  for (let start = params.fromBlock; start <= latestBlock; ) {
+    const end = start + DEFAULT_LOG_CHUNK_SIZE > latestBlock
+      ? latestBlock
+      : start + DEFAULT_LOG_CHUNK_SIZE;
+    const chunk = await pc.request({
+      method: "eth_getLogs",
+      params: [{
+      address: params.address,
+      topics: [params.topic0],
+      fromBlock: `0x${start.toString(16)}`,
+      toBlock: `0x${end.toString(16)}`,
+      }],
+    }) as any[];
+    logs.push(...chunk);
+    start = end + 1n;
+  }
+  return logs;
+}
+
 export async function listDapps(
   publicClient: PublicClient,
   dappRegistry: Address,
@@ -132,18 +193,27 @@ export async function listDapps(
 ): Promise<DappRow[]> {
   const pc = publicClient as any;
   const [published, upgraded, metadata, paused, unpaused, deprecated] = await Promise.all([
-    pc.getLogs({ address: dappRegistry, abi: dappRegistryAbi, eventName: "DappPublished", fromBlock, toBlock: "latest" }),
-    pc.getLogs({ address: dappRegistry, abi: dappRegistryAbi, eventName: "DappUpgraded", fromBlock, toBlock: "latest" }),
-    pc.getLogs({ address: dappRegistry, abi: dappRegistryAbi, eventName: "DappMetadata", fromBlock, toBlock: "latest" }),
-    pc.getLogs({ address: dappRegistry, abi: dappRegistryAbi, eventName: "DappPaused", fromBlock, toBlock: "latest" }),
-    pc.getLogs({ address: dappRegistry, abi: dappRegistryAbi, eventName: "DappUnpaused", fromBlock, toBlock: "latest" }),
-    pc.getLogs({ address: dappRegistry, abi: dappRegistryAbi, eventName: "DappDeprecated", fromBlock, toBlock: "latest" })
+    getLogsChunked(pc, { address: dappRegistry, topic0: toEventSelector(DAPP_PUBLISHED_EVENT), fromBlock }),
+    getLogsChunked(pc, { address: dappRegistry, topic0: toEventSelector(DAPP_UPGRADED_EVENT), fromBlock }),
+    getLogsChunked(pc, { address: dappRegistry, topic0: toEventSelector(DAPP_METADATA_EVENT), fromBlock }),
+    getLogsChunked(pc, { address: dappRegistry, topic0: toEventSelector(DAPP_PAUSED_EVENT), fromBlock }),
+    getLogsChunked(pc, { address: dappRegistry, topic0: toEventSelector(DAPP_UNPAUSED_EVENT), fromBlock }),
+    getLogsChunked(pc, { address: dappRegistry, topic0: toEventSelector(DAPP_DEPRECATED_EVENT), fromBlock })
   ]);
 
-  const all = [...published, ...upgraded, ...metadata, ...paused, ...unpaused, ...deprecated].sort((a, b) => {
-    const blockDiff = Number((a.blockNumber ?? 0n) - (b.blockNumber ?? 0n));
+  const all = [
+    ...published.map((log) => ({ kind: "DappPublished" as const, log })),
+    ...upgraded.map((log) => ({ kind: "DappUpgraded" as const, log })),
+    ...metadata.map((log) => ({ kind: "DappMetadata" as const, log })),
+    ...paused.map((log) => ({ kind: "DappPaused" as const, log })),
+    ...unpaused.map((log) => ({ kind: "DappUnpaused" as const, log })),
+    ...deprecated.map((log) => ({ kind: "DappDeprecated" as const, log })),
+  ].sort((a, b) => {
+    const blockDiff = Number(
+      asBigIntQuantity(a.log.blockNumber) - asBigIntQuantity(b.log.blockNumber)
+    );
     if (blockDiff !== 0) return blockDiff;
-    return Number((a.logIndex ?? 0n) - (b.logIndex ?? 0n));
+    return Number(asBigIntQuantity(a.log.logIndex) - asBigIntQuantity(b.log.logIndex));
   });
 
   const dapps = new Map<string, Dapp>();
@@ -158,36 +228,73 @@ export async function listDapps(
     return { dapp, version };
   };
 
-  for (const log of all as any[]) {
-    if (log.eventName === "DappPublished") {
-      const dappId = log.args.dappId as bigint;
-      const versionId = log.args.versionId as bigint;
+  for (const entry of all as any[]) {
+    const log = entry.log;
+    if (entry.kind === "DappPublished") {
+      const decoded = decodeEventLog({
+        abi: [DAPP_PUBLISHED_EVENT],
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      const args = decoded.args as any;
+      const dappId = args.dappId as bigint;
+      const versionId = args.versionId as bigint;
       const { dapp, version } = getVersion(dappId, versionId);
-      version.rootCid = decodeCid(log.args.rootCid as Hex);
+      version.rootCid = decodeCid(args.rootCid as Hex);
       version.status = "Published";
       dapp.latestVersionId = versionId;
-    } else if (log.eventName === "DappUpgraded") {
-      const dappId = log.args.dappId as bigint;
-      const versionId = log.args.toVersionId as bigint;
+    } else if (entry.kind === "DappUpgraded") {
+      const decoded = decodeEventLog({
+        abi: [DAPP_UPGRADED_EVENT],
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      const args = decoded.args as any;
+      const dappId = args.dappId as bigint;
+      const versionId = args.toVersionId as bigint;
       const { dapp, version } = getVersion(dappId, versionId);
-      version.rootCid = decodeCid(log.args.rootCid as Hex);
+      version.rootCid = decodeCid(args.rootCid as Hex);
       version.status = "Published";
       dapp.latestVersionId = versionId;
-    } else if (log.eventName === "DappMetadata") {
-      const dappId = log.args.dappId as bigint;
-      const versionId = log.args.versionId as bigint;
+    } else if (entry.kind === "DappMetadata") {
+      const decoded = decodeEventLog({
+        abi: [DAPP_METADATA_EVENT],
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      const args = decoded.args as any;
+      const dappId = args.dappId as bigint;
+      const versionId = args.versionId as bigint;
       const { version } = getVersion(dappId, versionId);
-      version.name = (log.args.name as string) ?? "";
-      version.version = (log.args.version as string) ?? "";
-      version.description = (log.args.description as string) ?? "";
-    } else if (log.eventName === "DappPaused") {
-      const { version } = getVersion(log.args.dappId as bigint, log.args.versionId as bigint);
+      version.name = (args.name as string) ?? "";
+      version.version = (args.version as string) ?? "";
+      version.description = (args.description as string) ?? "";
+    } else if (entry.kind === "DappPaused") {
+      const decoded = decodeEventLog({
+        abi: [DAPP_PAUSED_EVENT],
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      const args = decoded.args as any;
+      const { version } = getVersion(args.dappId as bigint, args.versionId as bigint);
       version.status = "Paused";
-    } else if (log.eventName === "DappUnpaused") {
-      const { version } = getVersion(log.args.dappId as bigint, log.args.versionId as bigint);
+    } else if (entry.kind === "DappUnpaused") {
+      const decoded = decodeEventLog({
+        abi: [DAPP_UNPAUSED_EVENT],
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      const args = decoded.args as any;
+      const { version } = getVersion(args.dappId as bigint, args.versionId as bigint);
       version.status = "Published";
-    } else if (log.eventName === "DappDeprecated") {
-      const { version } = getVersion(log.args.dappId as bigint, log.args.versionId as bigint);
+    } else if (entry.kind === "DappDeprecated") {
+      const decoded = decodeEventLog({
+        abi: [DAPP_DEPRECATED_EVENT],
+        data: log.data as Hex,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      const args = decoded.args as any;
+      const { version } = getVersion(args.dappId as bigint, args.versionId as bigint);
       version.status = "Deprecated";
     }
   }

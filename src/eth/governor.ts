@@ -1,10 +1,13 @@
 import {
+  decodeEventLog,
   keccak256,
+  parseAbiItem,
   stringToHex,
+  toEventSelector,
   type Address,
   type Hex,
   type PublicClient,
-  type WalletClient
+  type WalletClient,
 } from "viem";
 import governorAbi from "../../abis/VfiGovernor.json";
 
@@ -31,42 +34,94 @@ const STATE_NAMES = [
   "Executed"
 ] as const;
 
+const DEFAULT_LOG_CHUNK_SIZE = 45_000n;
+const PROPOSAL_CREATED_EVENT = parseAbiItem(
+  "event ProposalCreated(uint256 proposalId, address proposer, address[] targets, uint256[] values, string[] signatures, bytes[] calldatas, uint256 voteStart, uint256 voteEnd, string description)"
+);
+
+function argAt(args: unknown, key: string, index: number): unknown {
+  if (args && typeof args === "object") {
+    const rec = args as Record<string, unknown>;
+    if (rec[key] !== undefined) return rec[key];
+    if (rec[String(index)] !== undefined) return rec[String(index)];
+  }
+  return undefined;
+}
+
+async function getRawLogsChunkedByTopic(
+  pc: any,
+  address: Address,
+  fromBlock: bigint,
+  topic0: Hex
+): Promise<Array<{ data: Hex; topics: Hex[] }>> {
+  const latestBlock = (await pc.getBlockNumber()) as bigint;
+  if (fromBlock > latestBlock) return [];
+
+  const logs: Array<{ data: Hex; topics: Hex[] }> = [];
+  for (let start = fromBlock; start <= latestBlock; ) {
+    const end = start + DEFAULT_LOG_CHUNK_SIZE > latestBlock
+      ? latestBlock
+      : start + DEFAULT_LOG_CHUNK_SIZE;
+    const chunk = await pc.request({
+      method: "eth_getLogs",
+      params: [{
+        address,
+        topics: [topic0],
+        fromBlock: `0x${start.toString(16)}`,
+        toBlock: `0x${end.toString(16)}`,
+      }],
+    }) as Array<{ data: Hex; topics: Hex[] }>;
+    logs.push(...chunk);
+    start = end + 1n;
+  }
+  return logs;
+}
+
 export async function listProposals(
   publicClient: PublicClient,
   governor: Address,
   fromBlock: bigint
 ): Promise<ProposalInfo[]> {
   const pc = publicClient as any;
-  const logs = await pc.getLogs({
-    address: governor,
-    abi: governorAbi,
-    eventName: "ProposalCreated",
-    fromBlock,
-    toBlock: "latest"
-  });
+  const topic0 = toEventSelector(PROPOSAL_CREATED_EVENT);
+  const logs = await getRawLogsChunkedByTopic(pc, governor, fromBlock, topic0);
 
-  const rows = await Promise.all(logs.map(async (log: any) => {
-    const args = log.args as Record<string, unknown>;
-    const proposalId = args.proposalId as bigint;
-    const stateNum = await pc.readContract({
-      address: governor,
-      abi: governorAbi,
-      functionName: "state",
-      args: [proposalId]
-    }) as bigint;
+  const rowsRaw = await Promise.all(logs.map(async (log) => {
+    try {
+      const decoded = decodeEventLog({
+        abi: [PROPOSAL_CREATED_EVENT],
+        data: log.data,
+        topics: log.topics as [Hex, ...Hex[]],
+        strict: true,
+      });
+      const args = decoded.args;
+      const proposalId = argAt(args, "proposalId", 0);
+      const proposer = argAt(args, "proposer", 1);
+      if (typeof proposalId !== "bigint" || typeof proposer !== "string") return null;
 
-    return {
-      proposalId,
-      proposer: args.proposer as Address,
-      description: args.description as string,
-      targets: (args.targets as Address[]) ?? [],
-      values: (args.values as bigint[]) ?? [],
-      calldatas: (args.calldatas as Hex[]) ?? [],
-      voteStart: args.voteStart as bigint,
-      voteEnd: args.voteEnd as bigint,
-      state: STATE_NAMES[Number(stateNum)] ?? String(stateNum)
-    };
+      const stateNum = await pc.readContract({
+        address: governor,
+        abi: governorAbi,
+        functionName: "state",
+        args: [proposalId]
+      }) as bigint;
+
+      return {
+        proposalId,
+        proposer: proposer as Address,
+        description: (argAt(args, "description", 8) as string) ?? "",
+        targets: (argAt(args, "targets", 2) as Address[]) ?? [],
+        values: (argAt(args, "values", 3) as bigint[]) ?? [],
+        calldatas: (argAt(args, "calldatas", 5) as Hex[]) ?? [],
+        voteStart: (argAt(args, "voteStart", 6) as bigint) ?? 0n,
+        voteEnd: (argAt(args, "voteEnd", 7) as bigint) ?? 0n,
+        state: STATE_NAMES[Number(stateNum)] ?? String(stateNum),
+      } as ProposalInfo;
+    } catch {
+      return null;
+    }
   }));
+  const rows = rowsRaw.filter((row): row is ProposalInfo => row !== null);
 
   rows.sort((a, b) => Number(b.proposalId - a.proposalId));
   return rows;
