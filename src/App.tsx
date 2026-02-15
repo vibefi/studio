@@ -166,6 +166,9 @@ type ProposalBundleRef = {
   dappId?: bigint;
 };
 
+type StudioPage = "dashboard" | "proposals" | "actions" | "review";
+type ReviewWorkspacePage = "summary" | "explorer";
+
 function extensionFor(path: string): string {
   const trimmed = path.trim();
   const dotIndex = trimmed.lastIndexOf(".");
@@ -267,6 +270,8 @@ export function App() {
   const [voteSupport, setVoteSupport] = useState<"for" | "against" | "abstain">("for");
   const [voteReason, setVoteReason] = useState("");
   const [proposalView, setProposalView] = useState<"all" | "active" | "historical">("all");
+  const [studioPage, setStudioPage] = useState<StudioPage>("dashboard");
+  const [reviewWorkspacePage, setReviewWorkspacePage] = useState<ReviewWorkspacePage>("summary");
 
   const [reviewCid, setReviewCid] = useState("");
   const [reviewBasePath, setReviewBasePath] = useState("");
@@ -578,6 +583,8 @@ export function App() {
       setStatus(`Proposal #${proposal.proposalId.toString()} does not include a publish/upgrade bundle CID`);
       return;
     }
+    setStudioPage("review");
+    setReviewWorkspacePage("explorer");
     setReviewCid(ref.rootCid);
     setReviewBasePath("");
     setSelectedReviewPath("");
@@ -612,6 +619,22 @@ export function App() {
         bundleRef: extractProposalBundleRef(proposal, network?.dappRegistry),
       }));
   }, [visibleProposals, network?.dappRegistry]);
+  const proposalStateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of proposals) {
+      counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
+    }
+    return counts;
+  }, [proposals]);
+  const queuedActions = useMemo(
+    () =>
+      proposalRows.filter(({ proposal }) =>
+        proposal.state === "Active" || proposal.state === "Succeeded" || proposal.state === "Queued"
+      ),
+    [proposalRows]
+  );
+  const recentDapps = useMemo(() => dapps.slice(0, 8), [dapps]);
+  const reviewCodeFileCount = useMemo(() => reviewFiles.filter((file) => file.isCode).length, [reviewFiles]);
 
   return (
     <div className="studio-shell">
@@ -639,6 +662,32 @@ export function App() {
               Refresh Data
             </button>
           </div>
+          <div className="studio-page-nav">
+            <button
+              className={`btn ${studioPage === "dashboard" ? "btn-primary" : ""}`}
+              onClick={() => setStudioPage("dashboard")}
+            >
+              Dashboard
+            </button>
+            <button
+              className={`btn ${studioPage === "proposals" ? "btn-primary" : ""}`}
+              onClick={() => setStudioPage("proposals")}
+            >
+              Proposals
+            </button>
+            <button
+              className={`btn ${studioPage === "actions" ? "btn-primary" : ""}`}
+              onClick={() => setStudioPage("actions")}
+            >
+              Actions
+            </button>
+            <button
+              className={`btn ${studioPage === "review" ? "btn-primary" : ""}`}
+              onClick={() => setStudioPage("review")}
+            >
+              Review
+            </button>
+          </div>
           <div className="studio-status" role="status">
             <span className="pill">
               {canAct ? "ready" : needsSupportedChain ? "wrong-chain" : "disconnected"}
@@ -654,34 +703,394 @@ export function App() {
           ) : null}
         </header>
 
-        <section className="studio-grid-two">
-          <SectionCard title="Connection" subtitle="Active network and contract context">
-            <dl className="studio-kv">
-              {kv("Account", account ? shortHash(account) : "not connected")}
-              {kv("Chain", chainId ?? "unknown")}
-              {kv("Network", network ? (network.name ?? `Chain ${chainId}`) : "unsupported")}
-              {kv("Deploy block", blockFrom(network).toString())}
-              {kv("Governor", network?.vfiGovernor ?? "n/a")}
-              {kv("Registry", network?.dappRegistry ?? "n/a")}
-              {txHash
-                ? kv(
-                    "Last tx",
-                    latestTxUrl ? (
-                      <a href={latestTxUrl} target="_blank" rel="noreferrer">
-                        {shortHash(txHash)}
-                      </a>
-                    ) : (
-                      shortHash(txHash)
-                    )
-                  )
-                : null}
-            </dl>
-          </SectionCard>
+        {studioPage === "dashboard" ? (
+          <>
+            <section className="studio-metrics">
+              <article className="studio-metric-card">
+                <span>Proposals</span>
+                <strong>{proposals.length}</strong>
+              </article>
+              <article className="studio-metric-card">
+                <span>Active</span>
+                <strong>{proposalStateCounts.get("Active") ?? 0}</strong>
+              </article>
+              <article className="studio-metric-card">
+                <span>Ready To Queue</span>
+                <strong>{proposalStateCounts.get("Succeeded") ?? 0}</strong>
+              </article>
+              <article className="studio-metric-card">
+                <span>Queued</span>
+                <strong>{proposalStateCounts.get("Queued") ?? 0}</strong>
+              </article>
+              <article className="studio-metric-card">
+                <span>Executed</span>
+                <strong>{proposalStateCounts.get("Executed") ?? 0}</strong>
+              </article>
+              <article className="studio-metric-card">
+                <span>Registry Entries</span>
+                <strong>{dapps.length}</strong>
+              </article>
+            </section>
 
+            <section className="studio-grid-two">
+              <SectionCard title="Priority Queue" subtitle="Top proposals that need governance actions">
+                <div className="studio-list">
+                  {queuedActions.slice(0, 8).map(({ proposal, bundleRef }) => (
+                    <div className="studio-list-item" key={`dashboard-${proposal.proposalId.toString()}`}>
+                      <div>
+                        <strong>#{proposal.proposalId.toString()}</strong>{" "}
+                        <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
+                        <p>{proposal.description}</p>
+                      </div>
+                      <div className="studio-actions">
+                        <button
+                          className="btn"
+                          onClick={() => onReviewProposalBundle(proposal)}
+                          disabled={!bundleRef?.rootCid || reviewLoading}
+                        >
+                          Review
+                        </button>
+                        <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
+                          Vote
+                        </button>
+                        <button className="btn" onClick={() => onQueue(proposal)} disabled={!canAct || proposal.state !== "Succeeded"}>
+                          Queue
+                        </button>
+                        <button className="btn" onClick={() => onExecute(proposal)} disabled={!canAct || proposal.state !== "Queued"}>
+                          Execute
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {queuedActions.length === 0 ? <div className="studio-empty-cell">No actionable proposals right now.</div> : null}
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Connection" subtitle="Active network and contract context">
+                <dl className="studio-kv">
+                  {kv("Account", account ? shortHash(account) : "not connected")}
+                  {kv("Chain", chainId ?? "unknown")}
+                  {kv("Network", network ? (network.name ?? `Chain ${chainId}`) : "unsupported")}
+                  {kv("Deploy block", blockFrom(network).toString())}
+                  {kv("Governor", network?.vfiGovernor ?? "n/a")}
+                  {kv("Registry", network?.dappRegistry ?? "n/a")}
+                  {txHash
+                    ? kv(
+                        "Last tx",
+                        latestTxUrl ? (
+                          <a href={latestTxUrl} target="_blank" rel="noreferrer">
+                            {shortHash(txHash)}
+                          </a>
+                        ) : (
+                          shortHash(txHash)
+                        )
+                      )
+                    : null}
+                </dl>
+              </SectionCard>
+            </section>
+
+            <SectionCard title="Registry Pulse" subtitle="Recent registry versions">
+              <div className="studio-table-wrap">
+                <table className="studio-table">
+                  <thead>
+                    <tr>
+                      <th>Dapp</th>
+                      <th>Version ID</th>
+                      <th>Name/Version</th>
+                      <th>Status</th>
+                      <th>Root CID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentDapps.map((item) => (
+                      <tr key={`dashboard-${item.dappId.toString()}-${item.versionId.toString()}`}>
+                        <td>#{item.dappId.toString()}</td>
+                        <td>{item.versionId.toString()}</td>
+                        <td>
+                          {item.name} ({item.version})
+                        </td>
+                        <td>{item.status}</td>
+                        <td>{item.rootCid || "-"}</td>
+                      </tr>
+                    ))}
+                    {recentDapps.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="studio-empty-cell">
+                          No dapp registry entries found.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+          </>
+        ) : null}
+
+        {studioPage === "actions" ? (
+          <>
+            <section className="studio-grid-two">
+              <SectionCard title="Propose Publish" subtitle="Create governance proposal for publishDapp">
+                <div className="studio-form-grid">
+                  <Field label="Root CID">
+                    <input value={publishRootCid} onChange={(e) => setPublishRootCid(e.target.value)} placeholder="bafy..." />
+                  </Field>
+                  <Field label="Name">
+                    <input value={publishName} onChange={(e) => setPublishName(e.target.value)} placeholder="VibeFi Studio" />
+                  </Field>
+                  <Field label="Version">
+                    <input value={publishVersion} onChange={(e) => setPublishVersion(e.target.value)} placeholder="0.0.1" />
+                  </Field>
+                  <Field label="Description">
+                    <input
+                      value={publishDescription}
+                      onChange={(e) => setPublishDescription(e.target.value)}
+                      placeholder="Main governance frontend"
+                    />
+                  </Field>
+                  <Field label="Proposal Description">
+                    <input
+                      value={publishProposalDescription}
+                      onChange={(e) => setPublishProposalDescription(e.target.value)}
+                      placeholder="optional"
+                    />
+                  </Field>
+                  <button className="btn btn-primary" onClick={onProposePublish} disabled={!canAct}>
+                    Submit Publish Proposal
+                  </button>
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Propose Upgrade" subtitle="Create governance proposal for upgradeDapp">
+                <div className="studio-form-grid">
+                  <Field label="Dapp ID" hint="Unsigned integer">
+                    <input value={upgradeDappId} onChange={(e) => setUpgradeDappId(e.target.value)} placeholder="1" />
+                  </Field>
+                  <Field label="New Root CID">
+                    <input value={upgradeRootCid} onChange={(e) => setUpgradeRootCid(e.target.value)} placeholder="bafy..." />
+                  </Field>
+                  <Field label="Name">
+                    <input value={upgradeName} onChange={(e) => setUpgradeName(e.target.value)} placeholder="VibeFi Studio" />
+                  </Field>
+                  <Field label="Version">
+                    <input value={upgradeVersion} onChange={(e) => setUpgradeVersion(e.target.value)} placeholder="0.0.2" />
+                  </Field>
+                  <Field label="Description">
+                    <input
+                      value={upgradeDescription}
+                      onChange={(e) => setUpgradeDescription(e.target.value)}
+                      placeholder="Updated governance frontend"
+                    />
+                  </Field>
+                  <Field label="Proposal Description">
+                    <input
+                      value={upgradeProposalDescription}
+                      onChange={(e) => setUpgradeProposalDescription(e.target.value)}
+                      placeholder="optional"
+                    />
+                  </Field>
+                  <button className="btn btn-primary" onClick={onProposeUpgrade} disabled={!canAct}>
+                    Submit Upgrade Proposal
+                  </button>
+                </div>
+              </SectionCard>
+            </section>
+
+            <SectionCard title="Governance Action Queue" subtitle="Vote, queue, and execute from one focused list">
+              <div className="studio-table-wrap">
+                <table className="studio-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>State</th>
+                      <th>Description</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {queuedActions.map(({ proposal, bundleRef }) => (
+                      <tr key={`action-${proposal.proposalId.toString()}`}>
+                        <td>#{proposal.proposalId.toString()}</td>
+                        <td>
+                          <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
+                        </td>
+                        <td>{proposal.description}</td>
+                        <td>
+                          <div className="studio-actions">
+                            <button
+                              className="btn"
+                              onClick={() => onReviewProposalBundle(proposal)}
+                              disabled={!bundleRef?.rootCid || reviewLoading}
+                            >
+                              Review
+                            </button>
+                            <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
+                              Vote
+                            </button>
+                            <button className="btn" onClick={() => onQueue(proposal)} disabled={!canAct || proposal.state !== "Succeeded"}>
+                              Queue
+                            </button>
+                            <button className="btn" onClick={() => onExecute(proposal)} disabled={!canAct || proposal.state !== "Queued"}>
+                              Execute
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {queuedActions.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="studio-empty-cell">
+                          No actionable proposals for this wallet/network.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+          </>
+        ) : null}
+
+        {studioPage === "proposals" ? (
+          <>
+            <SectionCard
+              title="Proposals"
+              subtitle="Loaded from deploy block onward, including historical and executed proposals"
+              right={
+                <div className="studio-inline-controls">
+                  <select value={proposalView} onChange={(e) => setProposalView(e.target.value as "all" | "active" | "historical")}>
+                    <option value="all">view: all</option>
+                    <option value="active">view: active/open</option>
+                    <option value="historical">view: historical/executed</option>
+                  </select>
+                  <select value={voteSupport} onChange={(e) => setVoteSupport(e.target.value as "for" | "against" | "abstain")}>
+                    <option value="for">vote: for</option>
+                    <option value="against">vote: against</option>
+                    <option value="abstain">vote: abstain</option>
+                  </select>
+                  <input
+                    value={voteReason}
+                    onChange={(e) => setVoteReason(e.target.value)}
+                    placeholder="vote reason (optional)"
+                  />
+                </div>
+              }
+            >
+              <div className="studio-table-wrap">
+                <table className="studio-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>State</th>
+                      <th>Proposer</th>
+                      <th>Bundle CID</th>
+                      <th>Description</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proposalRows.map(({ proposal, bundleRef }) => (
+                      <tr key={proposal.proposalId.toString()}>
+                        <td>#{proposal.proposalId.toString()}</td>
+                        <td>
+                          <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
+                        </td>
+                        <td>{shortHash(proposal.proposer)}</td>
+                        <td>{bundleRef?.rootCid ? <code>{shortHash(bundleRef.rootCid)}</code> : "-"}</td>
+                        <td>{proposal.description}</td>
+                        <td>
+                          <div className="studio-actions">
+                            <button
+                              className="btn"
+                              onClick={() => onReviewProposalBundle(proposal)}
+                              disabled={!bundleRef?.rootCid || reviewLoading}
+                            >
+                              Review Bundle
+                            </button>
+                            <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
+                              Vote
+                            </button>
+                            <button className="btn" onClick={() => onQueue(proposal)} disabled={!canAct || proposal.state !== "Succeeded"}>
+                              Queue
+                            </button>
+                            <button className="btn" onClick={() => onExecute(proposal)} disabled={!canAct || proposal.state !== "Queued"}>
+                              Execute
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {proposalRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="studio-empty-cell">
+                          No proposals found for this filter.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Registry Verification" subtitle="Dapp registry state from governance updates">
+              <div className="studio-table-wrap">
+                <table className="studio-table">
+                  <thead>
+                    <tr>
+                      <th>Dapp</th>
+                      <th>Version ID</th>
+                      <th>Name/Version</th>
+                      <th>Status</th>
+                      <th>Root CID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dapps.map((item) => (
+                      <tr key={`${item.dappId.toString()}-${item.versionId.toString()}`}>
+                        <td>#{item.dappId.toString()}</td>
+                        <td>{item.versionId.toString()}</td>
+                        <td>
+                          {item.name} ({item.version})
+                        </td>
+                        <td>{item.status}</td>
+                        <td>{item.rootCid || "-"}</td>
+                      </tr>
+                    ))}
+                    {dapps.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="studio-empty-cell">
+                          No dapp registry entries found.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </SectionCard>
+          </>
+        ) : null}
+
+        {studioPage === "review" ? (
           <SectionCard
-            title="Packaged Vapp Code Review"
-            subtitle="Manifest-aware review over injected vibefiIpfs snippet reads"
-            right={<span className="pill">safe preview</span>}
+            title="Code Review Workspace"
+            subtitle="Split between bundle summary and deep file explorer"
+            right={
+              <div className="studio-inline-controls">
+                <button
+                  className={`btn ${reviewWorkspacePage === "summary" ? "btn-primary" : ""}`}
+                  onClick={() => setReviewWorkspacePage("summary")}
+                >
+                  Summary
+                </button>
+                <button
+                  className={`btn ${reviewWorkspacePage === "explorer" ? "btn-primary" : ""}`}
+                  onClick={() => setReviewWorkspacePage("explorer")}
+                >
+                  Explorer
+                </button>
+              </div>
+            }
           >
             <div className="studio-review-controls">
               <Field label="Bundle CID">
@@ -695,293 +1104,182 @@ export function App() {
               </button>
             </div>
 
-            <div className="studio-review-controls">
-              <Field label="Open File Path" hint="Exact path from manifest listing">
-                <input
-                  value={selectedReviewPath}
-                  onChange={(e) => setSelectedReviewPath(e.target.value)}
-                  placeholder="src/App.tsx"
-                />
-              </Field>
-              <button className="btn" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
-                Open Path
-              </button>
-            </div>
+            {reviewWorkspacePage === "summary" ? (
+              <>
+                <section className="studio-metrics">
+                  <article className="studio-metric-card">
+                    <span>Manifest Files</span>
+                    <strong>{reviewFiles.length}</strong>
+                  </article>
+                  <article className="studio-metric-card">
+                    <span>Code Files</span>
+                    <strong>{reviewCodeFileCount}</strong>
+                  </article>
+                  <article className="studio-metric-card">
+                    <span>Data Files</span>
+                    <strong>{Math.max(0, reviewFiles.length - reviewCodeFileCount)}</strong>
+                  </article>
+                  <article className="studio-metric-card">
+                    <span>Bidi Flags</span>
+                    <strong>{selectedReviewSnippet?.hasBidiControls ? "Detected" : "None"}</strong>
+                  </article>
+                </section>
 
-            <div className="studio-review-layout">
-              <aside className="studio-review-files">
-                <div className="studio-review-files-head">
-                  <strong>Files ({filteredReviewFiles.length}/{reviewFiles.length})</strong>
-                  <input
-                    value={reviewQuery}
-                    onChange={(e) => setReviewQuery(e.target.value)}
-                    placeholder="Filter files..."
-                  />
-                </div>
-                <div className="studio-review-file-list">
-                  {filteredReviewFiles.map((file) => (
-                    <button
-                      key={file.path}
-                      className={`studio-review-file-btn ${file.path === selectedReviewPath ? "active" : ""}`}
-                      onClick={() => onOpenReviewFile(file.path)}
-                      disabled={reviewLoading}
-                    >
-                      <span className={file.isCode ? "studio-badge-code" : "studio-badge-data"}>
-                        {file.isCode ? "code" : "data"}
-                      </span>
-                      <span className="studio-review-file-path">{file.path}</span>
-                      <span className="studio-review-file-size">{formatBytes(file.bytes)}</span>
-                    </button>
-                  ))}
-                  {filteredReviewFiles.length === 0 ? (
-                    <div className="studio-review-empty">No files match the current filter.</div>
-                  ) : null}
-                </div>
-              </aside>
-
-              <section className="studio-review-preview">
-                <div className="studio-review-meta">
-                  <div className="studio-review-meta-row">
-                    <span className="studio-review-meta-key">Path</span>
-                    <span className="studio-review-meta-value">{selectedReviewPath || "-"}</span>
-                  </div>
-                  <div className="studio-review-meta-row">
-                    <span className="studio-review-meta-key">Range</span>
-                    <span className="studio-review-meta-value">
-                      {selectedReviewSnippet
-                        ? `${selectedReviewSnippet.lineStart}-${selectedReviewSnippet.lineEnd}`
-                        : "-"}
-                    </span>
-                  </div>
-                  <div className="studio-review-meta-row">
-                    <span className="studio-review-meta-key">Size</span>
-                    <span className="studio-review-meta-value">
-                      {selectedReviewHead ? formatBytes(selectedReviewHead.size) : "-"}
-                    </span>
-                  </div>
-                  <div className="studio-review-meta-row">
-                    <span className="studio-review-meta-key">Content-Type</span>
-                    <span className="studio-review-meta-value">{selectedReviewHead?.contentType ?? "-"}</span>
-                  </div>
-                  <div className="studio-review-meta-row">
-                    <span className="studio-review-meta-key">Flags</span>
-                    <span className="studio-review-meta-value">
-                      {selectedReviewSnippet?.hasBidiControls ? "bidi-control-chars-detected" : "none"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="studio-review-pagination">
-                  <button
-                    className="btn"
-                    onClick={onReviewPrevPage}
-                    disabled={reviewLoading || !selectedReviewSnippet || selectedReviewSnippet.lineStart <= 1}
-                  >
-                    Previous Lines
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={onReviewNextPage}
-                    disabled={reviewLoading || !selectedReviewSnippet || !selectedReviewSnippet.truncatedTail}
-                  >
-                    Next Lines
-                  </button>
-                </div>
-                <pre className="studio-snippet studio-review-snippet">{renderedSnippet}</pre>
-              </section>
-            </div>
-          </SectionCard>
-        </section>
-
-        <section className="studio-grid-two">
-          <SectionCard title="Propose Publish" subtitle="Create governance proposal for publishDapp">
-            <div className="studio-form-grid">
-              <Field label="Root CID">
-                <input value={publishRootCid} onChange={(e) => setPublishRootCid(e.target.value)} placeholder="bafy..." />
-              </Field>
-              <Field label="Name">
-                <input value={publishName} onChange={(e) => setPublishName(e.target.value)} placeholder="VibeFi Studio" />
-              </Field>
-              <Field label="Version">
-                <input value={publishVersion} onChange={(e) => setPublishVersion(e.target.value)} placeholder="0.0.1" />
-              </Field>
-              <Field label="Description">
-                <input
-                  value={publishDescription}
-                  onChange={(e) => setPublishDescription(e.target.value)}
-                  placeholder="Main governance frontend"
-                />
-              </Field>
-              <Field label="Proposal Description">
-                <input
-                  value={publishProposalDescription}
-                  onChange={(e) => setPublishProposalDescription(e.target.value)}
-                  placeholder="optional"
-                />
-              </Field>
-              <button className="btn btn-primary" onClick={onProposePublish} disabled={!canAct}>
-                Submit Publish Proposal
-              </button>
-            </div>
-          </SectionCard>
-
-          <SectionCard title="Propose Upgrade" subtitle="Create governance proposal for upgradeDapp">
-            <div className="studio-form-grid">
-              <Field label="Dapp ID" hint="Unsigned integer">
-                <input value={upgradeDappId} onChange={(e) => setUpgradeDappId(e.target.value)} placeholder="1" />
-              </Field>
-              <Field label="New Root CID">
-                <input value={upgradeRootCid} onChange={(e) => setUpgradeRootCid(e.target.value)} placeholder="bafy..." />
-              </Field>
-              <Field label="Name">
-                <input value={upgradeName} onChange={(e) => setUpgradeName(e.target.value)} placeholder="VibeFi Studio" />
-              </Field>
-              <Field label="Version">
-                <input value={upgradeVersion} onChange={(e) => setUpgradeVersion(e.target.value)} placeholder="0.0.2" />
-              </Field>
-              <Field label="Description">
-                <input
-                  value={upgradeDescription}
-                  onChange={(e) => setUpgradeDescription(e.target.value)}
-                  placeholder="Updated governance frontend"
-                />
-              </Field>
-              <Field label="Proposal Description">
-                <input
-                  value={upgradeProposalDescription}
-                  onChange={(e) => setUpgradeProposalDescription(e.target.value)}
-                  placeholder="optional"
-                />
-              </Field>
-              <button className="btn btn-primary" onClick={onProposeUpgrade} disabled={!canAct}>
-                Submit Upgrade Proposal
-              </button>
-            </div>
-          </SectionCard>
-        </section>
-
-        <SectionCard
-          title="Proposals"
-          subtitle="Loaded from deploy block onward, including historical and executed proposals"
-          right={
-            <div className="studio-inline-controls">
-              <select value={proposalView} onChange={(e) => setProposalView(e.target.value as "all" | "active" | "historical")}>
-                <option value="all">view: all</option>
-                <option value="active">view: active/open</option>
-                <option value="historical">view: historical/executed</option>
-              </select>
-              <select value={voteSupport} onChange={(e) => setVoteSupport(e.target.value as "for" | "against" | "abstain")}>
-                <option value="for">vote: for</option>
-                <option value="against">vote: against</option>
-                <option value="abstain">vote: abstain</option>
-              </select>
-              <input
-                value={voteReason}
-                onChange={(e) => setVoteReason(e.target.value)}
-                placeholder="vote reason (optional)"
-              />
-            </div>
-          }
-        >
-          <div className="studio-table-wrap">
-            <table className="studio-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>State</th>
-                  <th>Proposer</th>
-                  <th>Bundle CID</th>
-                  <th>Description</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {proposalRows.map(({ proposal, bundleRef }) => (
-                  <tr key={proposal.proposalId.toString()}>
-                    <td>#{proposal.proposalId.toString()}</td>
-                    <td>
-                      <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
-                    </td>
-                    <td>{shortHash(proposal.proposer)}</td>
-                    <td>{bundleRef?.rootCid ? <code>{shortHash(bundleRef.rootCid)}</code> : "-"}</td>
-                    <td>{proposal.description}</td>
-                    <td>
-                      <div className="studio-actions">
-                        <button
-                          className="btn"
-                          onClick={() => onReviewProposalBundle(proposal)}
-                          disabled={!bundleRef?.rootCid || reviewLoading}
-                        >
-                          Review Bundle
-                        </button>
-                        <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
-                          Vote
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() => onQueue(proposal)}
-                          disabled={!canAct || proposal.state !== "Succeeded"}
-                        >
-                          Queue
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() => onExecute(proposal)}
-                          disabled={!canAct || proposal.state !== "Queued"}
-                        >
-                          Execute
-                        </button>
+                <section className="studio-grid-two">
+                  <SectionCard title="Selected File Snapshot" subtitle="High-level file metadata and current snippet">
+                    <div className="studio-review-meta">
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Path</span>
+                        <span className="studio-review-meta-value">{selectedReviewPath || "-"}</span>
                       </div>
-                    </td>
-                  </tr>
-                ))}
-                {proposalRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="studio-empty-cell">
-                      No proposals found for this filter.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </SectionCard>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Range</span>
+                        <span className="studio-review-meta-value">
+                          {selectedReviewSnippet ? `${selectedReviewSnippet.lineStart}-${selectedReviewSnippet.lineEnd}` : "-"}
+                        </span>
+                      </div>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Size</span>
+                        <span className="studio-review-meta-value">
+                          {selectedReviewHead ? formatBytes(selectedReviewHead.size) : "-"}
+                        </span>
+                      </div>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Content-Type</span>
+                        <span className="studio-review-meta-value">{selectedReviewHead?.contentType ?? "-"}</span>
+                      </div>
+                    </div>
+                    <pre className="studio-snippet">{renderedSnippet}</pre>
+                  </SectionCard>
 
-        <SectionCard title="Registry Verification" subtitle="Dapp registry state from governance updates">
-          <div className="studio-table-wrap">
-            <table className="studio-table">
-              <thead>
-                <tr>
-                  <th>Dapp</th>
-                  <th>Version ID</th>
-                  <th>Name/Version</th>
-                  <th>Status</th>
-                  <th>Root CID</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dapps.map((item) => (
-                  <tr key={`${item.dappId.toString()}-${item.versionId.toString()}`}>
-                    <td>#{item.dappId.toString()}</td>
-                    <td>{item.versionId.toString()}</td>
-                    <td>
-                      {item.name} ({item.version})
-                    </td>
-                    <td>{item.status}</td>
-                    <td>{item.rootCid || "-"}</td>
-                  </tr>
-                ))}
-                {dapps.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="studio-empty-cell">
-                      No dapp registry entries found.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </SectionCard>
+                  <SectionCard title="File Manifest" subtitle="Browse and open files directly from manifest listing">
+                    <div className="studio-review-files-head">
+                      <strong>Files ({filteredReviewFiles.length}/{reviewFiles.length})</strong>
+                      <input
+                        value={reviewQuery}
+                        onChange={(e) => setReviewQuery(e.target.value)}
+                        placeholder="Filter files..."
+                      />
+                    </div>
+                    <div className="studio-review-file-list">
+                      {filteredReviewFiles.map((file) => (
+                        <button
+                          key={`summary-${file.path}`}
+                          className={`studio-review-file-btn ${file.path === selectedReviewPath ? "active" : ""}`}
+                          onClick={() => onOpenReviewFile(file.path)}
+                          disabled={reviewLoading}
+                        >
+                          <span className={file.isCode ? "studio-badge-code" : "studio-badge-data"}>
+                            {file.isCode ? "code" : "data"}
+                          </span>
+                          <span className="studio-review-file-path">{file.path}</span>
+                          <span className="studio-review-file-size">{formatBytes(file.bytes)}</span>
+                        </button>
+                      ))}
+                      {filteredReviewFiles.length === 0 ? <div className="studio-review-empty">No files match the current filter.</div> : null}
+                    </div>
+                  </SectionCard>
+                </section>
+              </>
+            ) : (
+              <>
+                <div className="studio-review-controls">
+                  <Field label="Open File Path" hint="Exact path from manifest listing">
+                    <input
+                      value={selectedReviewPath}
+                      onChange={(e) => setSelectedReviewPath(e.target.value)}
+                      placeholder="src/App.tsx"
+                    />
+                  </Field>
+                  <button className="btn" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
+                    Open Path
+                  </button>
+                </div>
+
+                <div className="studio-review-layout">
+                  <aside className="studio-review-files">
+                    <div className="studio-review-files-head">
+                      <strong>Files ({filteredReviewFiles.length}/{reviewFiles.length})</strong>
+                      <input
+                        value={reviewQuery}
+                        onChange={(e) => setReviewQuery(e.target.value)}
+                        placeholder="Filter files..."
+                      />
+                    </div>
+                    <div className="studio-review-file-list">
+                      {filteredReviewFiles.map((file) => (
+                        <button
+                          key={file.path}
+                          className={`studio-review-file-btn ${file.path === selectedReviewPath ? "active" : ""}`}
+                          onClick={() => onOpenReviewFile(file.path)}
+                          disabled={reviewLoading}
+                        >
+                          <span className={file.isCode ? "studio-badge-code" : "studio-badge-data"}>
+                            {file.isCode ? "code" : "data"}
+                          </span>
+                          <span className="studio-review-file-path">{file.path}</span>
+                          <span className="studio-review-file-size">{formatBytes(file.bytes)}</span>
+                        </button>
+                      ))}
+                      {filteredReviewFiles.length === 0 ? (
+                        <div className="studio-review-empty">No files match the current filter.</div>
+                      ) : null}
+                    </div>
+                  </aside>
+
+                  <section className="studio-review-preview">
+                    <div className="studio-review-meta">
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Path</span>
+                        <span className="studio-review-meta-value">{selectedReviewPath || "-"}</span>
+                      </div>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Range</span>
+                        <span className="studio-review-meta-value">
+                          {selectedReviewSnippet ? `${selectedReviewSnippet.lineStart}-${selectedReviewSnippet.lineEnd}` : "-"}
+                        </span>
+                      </div>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Size</span>
+                        <span className="studio-review-meta-value">
+                          {selectedReviewHead ? formatBytes(selectedReviewHead.size) : "-"}
+                        </span>
+                      </div>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Content-Type</span>
+                        <span className="studio-review-meta-value">{selectedReviewHead?.contentType ?? "-"}</span>
+                      </div>
+                      <div className="studio-review-meta-row">
+                        <span className="studio-review-meta-key">Flags</span>
+                        <span className="studio-review-meta-value">
+                          {selectedReviewSnippet?.hasBidiControls ? "bidi-control-chars-detected" : "none"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="studio-review-pagination">
+                      <button
+                        className="btn"
+                        onClick={onReviewPrevPage}
+                        disabled={reviewLoading || !selectedReviewSnippet || selectedReviewSnippet.lineStart <= 1}
+                      >
+                        Previous Lines
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={onReviewNextPage}
+                        disabled={reviewLoading || !selectedReviewSnippet || !selectedReviewSnippet.truncatedTail}
+                      >
+                        Next Lines
+                      </button>
+                    </div>
+                    <pre className="studio-snippet studio-review-snippet">{renderedSnippet}</pre>
+                  </section>
+                </div>
+              </>
+            )}
+          </SectionCard>
+        ) : null}
       </main>
     </div>
   );

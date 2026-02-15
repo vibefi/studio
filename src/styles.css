@@ -102,6 +102,12 @@ a {
   gap: 10px;
 }
 
+.studio-page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .studio-status {
   display: flex;
   align-items: center;
@@ -133,6 +139,33 @@ a {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.studio-metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.studio-metric-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-strong);
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.studio-metric-card span {
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.studio-metric-card strong {
+  font-size: 1.32rem;
+  line-height: 1.1;
 }
 
 .studio-card {
@@ -315,6 +348,26 @@ button:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.studio-list {
+  display: grid;
+  gap: 10px;
+}
+
+.studio-list-item {
+  border: 1px solid rgba(156, 214, 255, 0.25);
+  border-radius: 12px;
+  background: rgba(9, 20, 35, 0.5);
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.studio-list-item p {
+  margin: 8px 0 0;
+  color: var(--text-1);
+  font-size: 0.9rem;
 }
 
 .studio-empty-cell {
@@ -521,6 +574,10 @@ button:focus-visible {
 }
 
 @media (max-width: 1020px) {
+  .studio-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .studio-grid-two {
     grid-template-columns: 1fr;
   }
@@ -551,6 +608,10 @@ button:focus-visible {
 @media (max-width: 720px) {
   .studio-page {
     padding: 12px;
+  }
+
+  .studio-metrics {
+    grid-template-columns: 1fr;
   }
 
   .studio-hero {
