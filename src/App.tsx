@@ -47,11 +47,6 @@ function getNetwork(chainId: number | null): NetworkAddresses | null {
   return ADDRESSES[String(chainId)] ?? null;
 }
 
-function txUrl(chainId: number | null, hash: string) {
-  if (chainId === 11155111) return `https://sepolia.etherscan.io/tx/${hash}`;
-  return "";
-}
-
 function blockFrom(network: NetworkAddresses | null): bigint {
   return BigInt(network?.deployBlock ?? 0);
 }
@@ -498,7 +493,7 @@ export function App() {
   }
 
   const canAct = !!(publicClient && walletClient && account && network);
-  const latestTxUrl = txHash ? txUrl(chainId, txHash) : "";
+  const latestTxUrl = "";
   const filteredReviewFiles = useMemo(() => {
     const needle = reviewQuery.trim().toLowerCase();
     if (!needle) return reviewFiles;
