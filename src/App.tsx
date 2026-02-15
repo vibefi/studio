@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   decodeFunctionData,
+  formatEther,
   hexToString,
   isHex,
   toBytes,
@@ -117,12 +118,14 @@ function Field(props: { label: string; hint?: string; children: ReactNode }) {
   );
 }
 
-function kv(label: string, value: ReactNode) {
+function Toast(props: { message: string; onClose: () => void }) {
   return (
-    <>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </>
+    <div className="studio-toast" role="status" aria-live="polite">
+      <span>{props.message}</span>
+      <button className="btn" onClick={props.onClose}>
+        Dismiss
+      </button>
+    </div>
   );
 }
 
@@ -195,6 +198,21 @@ function clampProgressPercent(value: number | undefined): number {
   return Math.min(100, Math.max(0, Math.round(value)));
 }
 
+function formatProposalIdCompact(proposalId: bigint): string {
+  const raw = proposalId.toString();
+  if (raw.length <= 12) return `#${raw}`;
+  return `#${raw.slice(0, 8)}...${raw.slice(-4)}`;
+}
+
+function formatEthBalance(value: bigint | null): string {
+  if (value === null) return "--";
+  const raw = Number.parseFloat(formatEther(value));
+  if (!Number.isFinite(raw)) return formatEther(value);
+  if (raw >= 1) return raw.toFixed(4);
+  if (raw >= 0.0001) return raw.toFixed(6);
+  return raw.toExponential(2);
+}
+
 function withLineNumbers(text: string, startLine: number): string {
   const lines = text ? text.split("\n") : [];
   return lines.map((line, idx) => `${String(startLine + idx).padStart(5, " ")} | ${line}`).join("\n");
@@ -251,11 +269,13 @@ function extractProposalBundleRef(
 export function App() {
   const [account, setAccount] = useState<Address | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
+  const [ethBalance, setEthBalance] = useState<bigint | null>(null);
   const [publicClient, setPublicClient] = useState<PublicClient | null>(null);
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
 
-  const [status, setStatus] = useState<string>("Connect wallet to begin");
+  const [, setStatus] = useState<string>("Connect wallet to begin");
   const [txHash, setTxHash] = useState<Hex | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const [proposals, setProposals] = useState<ProposalInfo[]>([]);
   const [dapps, setDapps] = useState<DappRow[]>([]);
@@ -280,13 +300,11 @@ export function App() {
   const [reviewWorkspacePage, setReviewWorkspacePage] = useState<ReviewWorkspacePage>("summary");
 
   const [reviewCid, setReviewCid] = useState("");
-  const [reviewBasePath, setReviewBasePath] = useState("");
   const [reviewQuery, setReviewQuery] = useState("");
   const [reviewFiles, setReviewFiles] = useState<ReviewFile[]>([]);
   const [selectedReviewPath, setSelectedReviewPath] = useState("");
   const [selectedReviewHead, setSelectedReviewHead] = useState<IpfsHeadResult | null>(null);
   const [selectedReviewSnippet, setSelectedReviewSnippet] = useState<IpfsSnippetResult | null>(null);
-  const [reviewStartLine, setReviewStartLine] = useState(1);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewProgressPercent, setReviewProgressPercent] = useState(0);
   const [reviewProgressMessage, setReviewProgressMessage] = useState("");
@@ -295,6 +313,17 @@ export function App() {
 
   const network = useMemo(() => getNetwork(chainId), [chainId]);
   const needsSupportedChain = chainId !== null && !network;
+  const walletBalance = useMemo(() => formatEthBalance(ethBalance), [ethBalance]);
+
+  function pushToast(message: string) {
+    setToast(message);
+  }
+
+  function reportError(err: unknown, fallbackMessage = "Something went wrong") {
+    const message = err instanceof Error ? err.message : fallbackMessage;
+    setStatus(message);
+    pushToast(message);
+  }
 
   const syncInjectedWalletState = useCallback(async () => {
     try {
@@ -307,6 +336,7 @@ export function App() {
       if (nextChainId === null) {
         setPublicClient(null);
         setWalletClient(null);
+        setEthBalance(null);
         return;
       }
 
@@ -318,17 +348,42 @@ export function App() {
         setWalletClient(null);
       }
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to sync wallet state");
       setWalletClient(null);
       setPublicClient(null);
       setAccount(null);
       setChainId(null);
+      setEthBalance(null);
     }
   }, []);
 
   useEffect(() => {
     void syncInjectedWalletState();
   }, [syncInjectedWalletState]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshBalance() {
+      if (!publicClient || !account) {
+        setEthBalance(null);
+        return;
+      }
+      try {
+        const balance = await publicClient.getBalance({ address: account });
+        if (!cancelled) {
+          setEthBalance(balance);
+        }
+      } catch {
+        if (!cancelled) {
+          setEthBalance(null);
+        }
+      }
+    }
+    void refreshBalance();
+    return () => {
+      cancelled = true;
+    };
+  }, [publicClient, account, chainId, txHash]);
 
   useEffect(() => {
     const eth = window.ethereum;
@@ -359,7 +414,7 @@ export function App() {
       setStatus(`Connected ${connected.account} on chain ${connected.chainId}`);
       setTxHash(null);
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to connect wallet");
     }
   }
 
@@ -370,7 +425,7 @@ export function App() {
       await syncInjectedWalletState();
       setStatus(`Switched to chain ${DEFAULT_CHAIN_ID}`);
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to switch chain");
     }
   }
 
@@ -389,7 +444,7 @@ export function App() {
       setDapps(nextDapps);
       setStatus(`Loaded ${nextProposals.length} proposals and ${nextDapps.length} dapps`);
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to refresh governance data");
     }
   }
 
@@ -400,6 +455,12 @@ export function App() {
     lastAutoRefreshKeyRef.current = key;
     void refreshGovernanceData();
   }, [publicClient, walletClient, account, network, chainId]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   async function onProposePublish() {
     try {
@@ -422,7 +483,7 @@ export function App() {
       setStatus("Publish proposal submitted");
       await refreshGovernanceData();
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to submit publish proposal");
     }
   }
 
@@ -448,7 +509,7 @@ export function App() {
       setStatus("Upgrade proposal submitted");
       await refreshGovernanceData();
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to submit upgrade proposal");
     }
   }
 
@@ -468,7 +529,7 @@ export function App() {
       setStatus("Vote submitted");
       await refreshGovernanceData();
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to cast vote");
     }
   }
 
@@ -481,7 +542,7 @@ export function App() {
       setStatus("Queue submitted");
       await refreshGovernanceData();
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to queue proposal");
     }
   }
 
@@ -494,7 +555,7 @@ export function App() {
       setStatus("Execute submitted");
       await refreshGovernanceData();
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to execute proposal");
     }
   }
 
@@ -541,12 +602,11 @@ export function App() {
       setSelectedReviewPath(normalizedPath);
       setSelectedReviewHead(head);
       setSelectedReviewSnippet(snippet);
-      setReviewStartLine(snippet.lineStart);
       setReviewProgressPercent(100);
       setReviewProgressMessage(`Loaded ${normalizedPath}`);
       setStatus(`Loaded ${normalizedPath}:${snippet.lineStart}-${snippet.lineEnd}`);
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to load review snippet");
     } finally {
       if (manageLoading) {
         setReviewLoading(false);
@@ -554,7 +614,7 @@ export function App() {
     }
   }
 
-  async function loadReviewBundle(cid: string, basePath: string) {
+  async function loadReviewBundle(cid: string) {
     try {
       if (!cid) {
         throw new Error("CID is required");
@@ -565,7 +625,7 @@ export function App() {
       setReviewProgressMessage("Loading packaged vapp file index...");
       setReviewProgressIpcId(null);
       setStatus("Loading packaged vapp file index...");
-      const listing = await ipfsList(cid, basePath, {
+      const listing = await ipfsList(cid, "", {
         onProgress: (progress) => onIpfsProgress(progress, "Loading packaged vapp file index..."),
       });
       const files = listing.files
@@ -589,7 +649,7 @@ export function App() {
       setReviewProgressPercent(100);
       setReviewProgressMessage("Bundle review workspace ready.");
     } catch (err) {
-      setStatus((err as Error).message);
+      reportError(err, "Failed to load review bundle");
       setReviewFiles([]);
       setSelectedReviewPath("");
       setSelectedReviewHead(null);
@@ -600,7 +660,7 @@ export function App() {
   }
 
   async function onLoadReviewBundle() {
-    await loadReviewBundle(reviewCid.trim(), reviewBasePath.trim());
+    await loadReviewBundle(reviewCid.trim());
   }
 
   async function onOpenTypedReviewPath() {
@@ -611,35 +671,25 @@ export function App() {
     await loadSnippetWindow(path, 1);
   }
 
-  async function onReviewPrevPage() {
-    if (!selectedReviewPath || !selectedReviewSnippet) return;
-    await loadSnippetWindow(selectedReviewPath, Math.max(1, reviewStartLine - SNIPPET_PAGE_LINES));
-  }
-
-  async function onReviewNextPage() {
-    if (!selectedReviewPath || !selectedReviewSnippet?.truncatedTail) return;
-    await loadSnippetWindow(selectedReviewPath, selectedReviewSnippet.lineEnd + 1);
-  }
-
   async function onReviewProposalBundle(proposal: ProposalInfo) {
     const ref = extractProposalBundleRef(proposal, network?.dappRegistry);
     if (!ref) {
-      setStatus(`Proposal #${proposal.proposalId.toString()} does not include a publish/upgrade bundle CID`);
+      const message = `Proposal #${proposal.proposalId.toString()} does not include a publish/upgrade bundle CID`;
+      setStatus(message);
+      pushToast(message);
       return;
     }
     setStudioPage("review");
     setReviewWorkspacePage("explorer");
     setReviewCid(ref.rootCid);
-    setReviewBasePath("");
     setSelectedReviewPath("");
     setSelectedReviewHead(null);
     setSelectedReviewSnippet(null);
     setStatus(`Loading bundle CID from proposal #${proposal.proposalId.toString()} (${ref.action})...`);
-    await loadReviewBundle(ref.rootCid, "");
+    await loadReviewBundle(ref.rootCid);
   }
 
   const canAct = !!(publicClient && walletClient && account && network);
-  const latestTxUrl = "";
   const filteredReviewFiles = useMemo(() => {
     const needle = reviewQuery.trim().toLowerCase();
     if (!needle) return reviewFiles;
@@ -684,68 +734,59 @@ export function App() {
     <div className="studio-shell">
       <div className="studio-atmosphere" aria-hidden="true" />
       <main className="studio-page">
-        <header className="studio-hero">
-          <div>
+        <header className="studio-topbar">
+          <div className="studio-topbar-brand">
             <div className="studio-eyebrow">VibeFi DAO Console</div>
             <h1>Studio</h1>
-            <p>
-              Governance entrypoint for publish/upgrade proposals, voting, queue/execute operations, registry
-              verification, and safe IPFS snippet review.
-            </p>
           </div>
-          <div className="studio-hero-actions">
-            <button className="btn btn-primary" onClick={onConnect}>
-              Connect Wallet
-            </button>
-            {needsSupportedChain ? (
-              <button className="btn" onClick={onSwitchToSupportedChain}>
-                Switch to Supported Chain
+          <div className="studio-topbar-wallet">
+            {chainId !== null ? <span className="studio-topbar-chip">chain {chainId}</span> : null}
+            {account ? (
+              <>
+                <span className="studio-topbar-balance">Ξ {walletBalance}</span>
+                <span className="studio-topbar-chip">{shortHash(account)}</span>
+                {needsSupportedChain ? (
+                  <button className="btn" onClick={onSwitchToSupportedChain}>
+                    Switch to Supported Chain
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <button className="btn btn-primary" onClick={onConnect}>
+                Connect Wallet
               </button>
-            ) : null}
-            <button className="btn" onClick={refreshGovernanceData} disabled={!canAct}>
-              Refresh Data
-            </button>
+            )}
           </div>
-          <div className="studio-page-nav">
-            <button
-              className={`btn ${studioPage === "dashboard" ? "btn-primary" : ""}`}
-              onClick={() => setStudioPage("dashboard")}
-            >
-              Dashboard
-            </button>
-            <button
-              className={`btn ${studioPage === "proposals" ? "btn-primary" : ""}`}
-              onClick={() => setStudioPage("proposals")}
-            >
-              Proposals
-            </button>
-            <button
-              className={`btn ${studioPage === "actions" ? "btn-primary" : ""}`}
-              onClick={() => setStudioPage("actions")}
-            >
-              Actions
-            </button>
-            <button
-              className={`btn ${studioPage === "review" ? "btn-primary" : ""}`}
-              onClick={() => setStudioPage("review")}
-            >
-              Review
-            </button>
-          </div>
-          <div className="studio-status" role="status">
-            <span className="pill">
-              {canAct ? "ready" : needsSupportedChain ? "wrong-chain" : "disconnected"}
-            </span>
-            <span>{status}</span>
-          </div>
-          {needsSupportedChain ? (
-            <div className="studio-status" role="status">
-              <span>
-                Connected to chain {chainId}. Studio supports chain {DEFAULT_CHAIN_ID} for this build.
-              </span>
-            </div>
-          ) : null}
         </header>
+        <div className="studio-page-nav">
+          <button
+            className={`btn ${studioPage === "dashboard" ? "btn-primary" : ""}`}
+            onClick={() => setStudioPage("dashboard")}
+          >
+            Dashboard
+          </button>
+          <button
+            className={`btn ${studioPage === "proposals" ? "btn-primary" : ""}`}
+            onClick={() => setStudioPage("proposals")}
+          >
+            Proposals
+          </button>
+          <button
+            className={`btn ${studioPage === "actions" ? "btn-primary" : ""}`}
+            onClick={() => setStudioPage("actions")}
+          >
+            Actions
+          </button>
+          <button
+            className={`btn ${studioPage === "review" ? "btn-primary" : ""}`}
+            onClick={() => setStudioPage("review")}
+          >
+            Review
+          </button>
+        </div>
+        {needsSupportedChain ? (
+          <div className="studio-inline-note">Studio supports chain {DEFAULT_CHAIN_ID} for this build.</div>
+        ) : null}
 
         {studioPage === "dashboard" ? (
           <>
@@ -776,63 +817,38 @@ export function App() {
               </article>
             </section>
 
-            <section className="studio-grid-two">
-              <SectionCard title="Priority Queue" subtitle="Top proposals that need governance actions">
-                <div className="studio-list">
-                  {queuedActions.slice(0, 8).map(({ proposal, bundleRef }) => (
-                    <div className="studio-list-item" key={`dashboard-${proposal.proposalId.toString()}`}>
-                      <div>
-                        <strong>#{proposal.proposalId.toString()}</strong>{" "}
-                        <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
-                        <p>{proposal.description}</p>
-                      </div>
-                      <div className="studio-actions">
-                        <button
-                          className="btn"
-                          onClick={() => onReviewProposalBundle(proposal)}
-                          disabled={!bundleRef?.rootCid || reviewLoading}
-                        >
-                          Review
-                        </button>
-                        <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
-                          Vote
-                        </button>
-                        <button className="btn" onClick={() => onQueue(proposal)} disabled={!canAct || proposal.state !== "Succeeded"}>
-                          Queue
-                        </button>
-                        <button className="btn" onClick={() => onExecute(proposal)} disabled={!canAct || proposal.state !== "Queued"}>
-                          Execute
-                        </button>
-                      </div>
+            <SectionCard title="Priority Queue" subtitle="Top proposals that need governance actions">
+              <div className="studio-list">
+                {queuedActions.slice(0, 8).map(({ proposal, bundleRef }) => (
+                  <div className="studio-list-item" key={`dashboard-${proposal.proposalId.toString()}`}>
+                    <div>
+                      <strong>#{proposal.proposalId.toString()}</strong>{" "}
+                      <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
+                      <p>{proposal.description}</p>
                     </div>
-                  ))}
-                  {queuedActions.length === 0 ? <div className="studio-empty-cell">No actionable proposals right now.</div> : null}
-                </div>
-              </SectionCard>
-
-              <SectionCard title="Connection" subtitle="Active network and contract context">
-                <dl className="studio-kv">
-                  {kv("Account", account ? shortHash(account) : "not connected")}
-                  {kv("Chain", chainId ?? "unknown")}
-                  {kv("Network", network ? (network.name ?? `Chain ${chainId}`) : "unsupported")}
-                  {kv("Deploy block", blockFrom(network).toString())}
-                  {kv("Governor", network?.vfiGovernor ?? "n/a")}
-                  {kv("Registry", network?.dappRegistry ?? "n/a")}
-                  {txHash
-                    ? kv(
-                        "Last tx",
-                        latestTxUrl ? (
-                          <a href={latestTxUrl} target="_blank" rel="noreferrer">
-                            {shortHash(txHash)}
-                          </a>
-                        ) : (
-                          shortHash(txHash)
-                        )
-                      )
-                    : null}
-                </dl>
-              </SectionCard>
-            </section>
+                    <div className="studio-actions">
+                      <button
+                        className="btn"
+                        onClick={() => onReviewProposalBundle(proposal)}
+                        disabled={!bundleRef?.rootCid || reviewLoading}
+                      >
+                        Review
+                      </button>
+                      <button className="btn" onClick={() => onCastVote(proposal.proposalId)} disabled={!canAct}>
+                        Vote
+                      </button>
+                      <button className="btn" onClick={() => onQueue(proposal)} disabled={!canAct || proposal.state !== "Succeeded"}>
+                        Queue
+                      </button>
+                      <button className="btn" onClick={() => onExecute(proposal)} disabled={!canAct || proposal.state !== "Queued"}>
+                        Execute
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {queuedActions.length === 0 ? <div className="studio-empty-cell">No actionable proposals right now.</div> : null}
+              </div>
+            </SectionCard>
 
             <SectionCard title="Registry Pulse" subtitle="Recent registry versions">
               <div className="studio-table-wrap">
@@ -1030,20 +1046,20 @@ export function App() {
                       <th>Proposer</th>
                       <th>Bundle CID</th>
                       <th>Description</th>
-                      <th>Actions</th>
+                      <th className="studio-col-actions">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {proposalRows.map(({ proposal, bundleRef }) => (
                       <tr key={proposal.proposalId.toString()}>
-                        <td>#{proposal.proposalId.toString()}</td>
+                        <td title={`#${proposal.proposalId.toString()}`}>{formatProposalIdCompact(proposal.proposalId)}</td>
                         <td>
                           <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
                         </td>
                         <td>{shortHash(proposal.proposer)}</td>
                         <td>{bundleRef?.rootCid ? <code>{shortHash(bundleRef.rootCid)}</code> : "-"}</td>
                         <td>{proposal.description}</td>
-                        <td>
+                        <td className="studio-col-actions">
                           <div className="studio-actions">
                             <button
                               className="btn"
@@ -1139,9 +1155,6 @@ export function App() {
             <div className="studio-review-controls">
               <Field label="Bundle CID">
                 <input value={reviewCid} onChange={(e) => setReviewCid(e.target.value)} placeholder="bafy..." />
-              </Field>
-              <Field label="Base Path" hint="Optional path prefix to scope review">
-                <input value={reviewBasePath} onChange={(e) => setReviewBasePath(e.target.value)} placeholder="" />
               </Field>
               <button className="btn btn-primary" onClick={onLoadReviewBundle} disabled={reviewLoading}>
                 Load Manifest Files
@@ -1244,7 +1257,7 @@ export function App() {
               </>
             ) : (
               <>
-                <div className="studio-review-controls">
+                <div className="studio-review-open-controls">
                   <Field label="Open File Path" hint="Exact path from manifest listing">
                     <input
                       value={selectedReviewPath}
@@ -1252,7 +1265,7 @@ export function App() {
                       placeholder="src/App.tsx"
                     />
                   </Field>
-                  <button className="btn" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
+                  <button className="btn btn-primary" onClick={onOpenTypedReviewPath} disabled={reviewLoading}>
                     Open Path
                   </button>
                 </div>
@@ -1310,29 +1323,6 @@ export function App() {
                         <span className="studio-review-meta-key">Content-Type</span>
                         <span className="studio-review-meta-value">{selectedReviewHead?.contentType ?? "-"}</span>
                       </div>
-                      <div className="studio-review-meta-row">
-                        <span className="studio-review-meta-key">Flags</span>
-                        <span className="studio-review-meta-value">
-                          {selectedReviewSnippet?.hasBidiControls ? "bidi-control-chars-detected" : "none"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="studio-review-pagination">
-                      <button
-                        className="btn"
-                        onClick={onReviewPrevPage}
-                        disabled={reviewLoading || !selectedReviewSnippet || selectedReviewSnippet.lineStart <= 1}
-                      >
-                        Previous Lines
-                      </button>
-                      <button
-                        className="btn"
-                        onClick={onReviewNextPage}
-                        disabled={reviewLoading || !selectedReviewSnippet || !selectedReviewSnippet.truncatedTail}
-                      >
-                        Next Lines
-                      </button>
                     </div>
                     <pre className="studio-snippet studio-review-snippet">{renderedSnippet}</pre>
                   </section>
@@ -1341,6 +1331,7 @@ export function App() {
             )}
           </SectionCard>
         ) : null}
+        {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}
       </main>
     </div>
   );
