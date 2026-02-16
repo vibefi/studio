@@ -61,13 +61,12 @@ type IpfsProgressProvider = IpfsRequestProvider & {
 
 declare global {
   interface Window {
-    ipfs?: Partial<IpfsProgressProvider>;
-    vibefiIpfs?: IpfsRequestProvider;
+    vibefiIpfs?: Partial<IpfsProgressProvider>;
   }
 }
 
 function baseProvider(): IpfsRequestProvider {
-  const provider = window.ipfs ?? window.vibefiIpfs;
+  const provider = window.vibefiIpfs;
   if (!provider?.request) {
     throw new Error("No injected IPFS provider found");
   }
@@ -75,7 +74,7 @@ function baseProvider(): IpfsRequestProvider {
 }
 
 function progressProvider(): IpfsProgressProvider | null {
-  const provider = window.ipfs;
+  const provider = window.vibefiIpfs;
   if (!provider?.request || !provider.requestWithId || !provider.on || !provider.off) {
     return null;
   }
