@@ -300,6 +300,7 @@ export function App() {
   const [reviewWorkspacePage, setReviewWorkspacePage] = useState<ReviewWorkspacePage>("summary");
 
   const [reviewCid, setReviewCid] = useState("");
+  const reviewCidRef = useRef("");
   const [reviewQuery, setReviewQuery] = useState("");
   const [reviewFiles, setReviewFiles] = useState<ReviewFile[]>([]);
   const [selectedReviewPath, setSelectedReviewPath] = useState("");
@@ -317,6 +318,11 @@ export function App() {
 
   function pushToast(message: string) {
     setToast(message);
+  }
+
+  function updateReviewCid(value: string) {
+    reviewCidRef.current = value;
+    setReviewCid(value);
   }
 
   function reportError(err: unknown, fallbackMessage = "Something went wrong") {
@@ -568,9 +574,14 @@ export function App() {
     setReviewProgressMessage(nextMessage);
   }
 
-  async function loadSnippetWindow(path: string, startLine: number, manageLoading = true) {
+  async function loadSnippetWindow(
+    path: string,
+    startLine: number,
+    manageLoading = true,
+    cidInput?: string
+  ) {
     try {
-      const cid = reviewCid.trim();
+      const cid = (cidInput ?? reviewCidRef.current).trim();
       if (!cid) {
         throw new Error("CID is required");
       }
@@ -614,11 +625,14 @@ export function App() {
     }
   }
 
-  async function loadReviewBundle(cid: string) {
+  async function loadReviewBundle(cidInput: string) {
     try {
+      const cid = cidInput.trim();
       if (!cid) {
         throw new Error("CID is required");
       }
+
+      updateReviewCid(cid);
 
       setReviewLoading(true);
       setReviewProgressPercent(0);
@@ -645,7 +659,7 @@ export function App() {
       }
       setStatus(`Loaded ${files.length} files from manifest`);
       const firstCodeFile = files.find((file) => file.isCode) ?? files[0];
-      await loadSnippetWindow(firstCodeFile.path, 1, false);
+      await loadSnippetWindow(firstCodeFile.path, 1, false, cid);
       setReviewProgressPercent(100);
       setReviewProgressMessage("Bundle review workspace ready.");
     } catch (err) {
@@ -660,15 +674,15 @@ export function App() {
   }
 
   async function onLoadReviewBundle() {
-    await loadReviewBundle(reviewCid.trim());
+    await loadReviewBundle(reviewCidRef.current || reviewCid);
   }
 
   async function onOpenTypedReviewPath() {
-    await loadSnippetWindow(selectedReviewPath, 1);
+    await loadSnippetWindow(selectedReviewPath, 1, true, reviewCidRef.current);
   }
 
   async function onOpenReviewFile(path: string) {
-    await loadSnippetWindow(path, 1);
+    await loadSnippetWindow(path, 1, true, reviewCidRef.current);
   }
 
   async function onReviewProposalBundle(proposal: ProposalInfo) {
@@ -681,7 +695,7 @@ export function App() {
     }
     setStudioPage("review");
     setReviewWorkspacePage("explorer");
-    setReviewCid(ref.rootCid);
+    updateReviewCid(ref.rootCid);
     setSelectedReviewPath("");
     setSelectedReviewHead(null);
     setSelectedReviewSnippet(null);
@@ -1154,7 +1168,7 @@ export function App() {
           >
             <div className="studio-review-controls">
               <Field label="Bundle CID">
-                <input value={reviewCid} onChange={(e) => setReviewCid(e.target.value)} placeholder="bafy..." />
+                <input value={reviewCid} onChange={(e) => updateReviewCid(e.target.value)} placeholder="bafy..." />
               </Field>
               <button className="btn btn-primary" onClick={onLoadReviewBundle} disabled={reviewLoading}>
                 Load Manifest Files
