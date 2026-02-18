@@ -1,5 +1,5 @@
 import { decodeFunctionData, formatEther, hexToString, isHex, toBytes, type Address, type Hex } from "viem";
-import addressesJson from "../../addresses.json";
+import vibefiJson from "../../vibefi.json";
 import dappRegistryAbi from "../../abis/DappRegistry.json";
 import type { ProposalInfo } from "../eth/governor";
 import type { IpfsListFile } from "../ipfs/client";
@@ -14,7 +14,7 @@ export type NetworkAddresses = {
 
 export type AddressesMap = Record<string, NetworkAddresses>;
 
-const ADDRESSES = addressesJson as AddressesMap;
+const ADDRESSES = (vibefiJson as { addresses?: AddressesMap }).addresses ?? {};
 const DEFAULT_NETWORKS: AddressesMap = {
   "11155111": {
     name: "Sepolia",

@@ -1,0 +1,28 @@
+{
+  "addresses": {
+    "11155111": {
+      "vfiToken": "0xD11496882E083Ce67653eC655d14487030E548aC",
+      "vfiGovernor": "0x753d33e2E61F249c87e6D33c4e04b39731776297",
+      "dappRegistry": "0xFb84B57E757649Dff3870F1381C67c9097D0c67f"
+    }
+  },
+  "capabilities": {
+    "ipfs": {
+      "allow": [
+        {
+          "cid": "*",
+          "paths": [
+            "**"
+          ],
+          "as": [
+            "json",
+            "text",
+            "snippet",
+            "image"
+          ],
+          "maxBytes": 262144
+        }
+      ]
+    }
+  }
+}
