@@ -53,11 +53,11 @@ async function getRawLogsChunkedByTopic(
   address: Address,
   fromBlock: bigint,
   topic0: Hex
-): Promise<Array<{ data: Hex; topics: Hex[] }>> {
+): Promise<Array<{ data: Hex; topics: Hex[]; blockNumber?: Hex; logIndex?: Hex }>> {
   const latestBlock = (await pc.getBlockNumber()) as bigint;
   if (fromBlock > latestBlock) return [];
 
-  const logs: Array<{ data: Hex; topics: Hex[] }> = [];
+  const logs: Array<{ data: Hex; topics: Hex[]; blockNumber?: Hex; logIndex?: Hex }> = [];
   for (let start = fromBlock; start <= latestBlock; ) {
     const end = start + DEFAULT_LOG_CHUNK_SIZE > latestBlock
       ? latestBlock
@@ -75,6 +75,15 @@ async function getRawLogsChunkedByTopic(
     start = end + 1n;
   }
   return logs;
+}
+
+function parseHexToBigint(value: unknown): bigint {
+  if (typeof value !== "string" || !value.startsWith("0x")) return 0n;
+  try {
+    return BigInt(value);
+  } catch {
+    return 0n;
+  }
 }
 
 export async function listProposals(
@@ -116,15 +125,26 @@ export async function listProposals(
         voteStart: (argAt(args, "voteStart", 6) as bigint) ?? 0n,
         voteEnd: (argAt(args, "voteEnd", 7) as bigint) ?? 0n,
         state: STATE_NAMES[Number(stateNum)] ?? String(stateNum),
+        createdBlock: parseHexToBigint(log.blockNumber),
+        createdLogIndex: parseHexToBigint(log.logIndex),
       } as ProposalInfo;
     } catch {
       return null;
     }
   }));
-  const rows = rowsRaw.filter((row): row is ProposalInfo => row !== null);
+  const rows = rowsRaw.filter(
+    (row): row is ProposalInfo & { createdBlock: bigint; createdLogIndex: bigint } => row !== null
+  );
 
-  rows.sort((a, b) => Number(b.proposalId - a.proposalId));
-  return rows;
+  rows.sort((a, b) => {
+    if (a.createdBlock !== b.createdBlock) return a.createdBlock > b.createdBlock ? -1 : 1;
+    if (a.createdLogIndex !== b.createdLogIndex) return a.createdLogIndex > b.createdLogIndex ? -1 : 1;
+    if (a.voteStart !== b.voteStart) return a.voteStart > b.voteStart ? -1 : 1;
+    if (a.proposalId !== b.proposalId) return a.proposalId > b.proposalId ? -1 : 1;
+    return 0;
+  });
+
+  return rows.map(({ createdBlock: _createdBlock, createdLogIndex: _createdLogIndex, ...proposal }) => proposal);
 }
 
 export async function castVote(
