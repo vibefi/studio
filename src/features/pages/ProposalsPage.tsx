@@ -1,4 +1,4 @@
-import type { ProposalInfo } from "../../eth/governor";
+import type { ProposalInfo, ProposalRuntimeInfo } from "../../eth/governor";
 import type { DappRow } from "../../eth/registry";
 import { shortHash } from "../../env";
 import { SectionCard } from "../../components/StudioUi";
@@ -17,6 +17,9 @@ type ProposalsPageProps = {
   voteSupport: VoteSupport;
   voteReason: string;
   proposalRows: ProposalWithBundle[];
+  proposalRuntimeById: Record<string, ProposalRuntimeInfo>;
+  chainHead: { blockNumber: bigint; blockTimestamp: bigint } | null;
+  pendingGovernanceActionByProposalId: Record<string, "vote" | "queue" | "execute" | null>;
   dapps: DappRow[];
   canAct: boolean;
   reviewLoading: boolean;
@@ -74,30 +77,37 @@ export function ProposalsPage(props: ProposalsPageProps) {
               </tr>
             </thead>
             <tbody>
-              {props.proposalRows.map(({ proposal, bundleRef }) => (
-                <tr key={proposal.proposalId.toString()}>
-                  <td title={`#${proposal.proposalId.toString()}`}>{formatProposalIdCompact(proposal.proposalId)}</td>
-                  <td>
-                    <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
-                  </td>
-                  <td>{shortHash(proposal.proposer)}</td>
-                  <td>{bundleRef?.rootCid ? <code>{shortHash(bundleRef.rootCid)}</code> : "-"}</td>
-                  <td>{proposal.description}</td>
-                  <td className="studio-col-actions">
-                    <ProposalActionButtons
-                      proposal={proposal}
-                      canAct={props.canAct}
-                      reviewLoading={props.reviewLoading}
-                      hasBundle={!!bundleRef?.rootCid}
-                      reviewLabel="Review Bundle"
-                      onReview={props.onReviewProposalBundle}
-                      onCastVote={props.onCastVote}
-                      onQueue={props.onQueue}
-                      onExecute={props.onExecute}
-                    />
-                  </td>
-                </tr>
-              ))}
+              {props.proposalRows.map(({ proposal, bundleRef }) => {
+                const runtime = props.proposalRuntimeById[proposal.proposalId.toString()];
+                const effectiveState = runtime?.state ?? proposal.state;
+                return (
+                  <tr key={proposal.proposalId.toString()}>
+                    <td title={`#${proposal.proposalId.toString()}`}>{formatProposalIdCompact(proposal.proposalId)}</td>
+                    <td>
+                      <span className={`state-chip ${proposalStateClass(effectiveState)}`}>{effectiveState}</span>
+                    </td>
+                    <td>{shortHash(proposal.proposer)}</td>
+                    <td>{bundleRef?.rootCid ? <code>{shortHash(bundleRef.rootCid)}</code> : "-"}</td>
+                    <td>{proposal.description}</td>
+                    <td className="studio-col-actions">
+                      <ProposalActionButtons
+                        proposal={proposal}
+                        runtime={runtime}
+                        chainHead={props.chainHead}
+                        pendingAction={props.pendingGovernanceActionByProposalId[proposal.proposalId.toString()] ?? null}
+                        canAct={props.canAct}
+                        reviewLoading={props.reviewLoading}
+                        hasBundle={!!bundleRef?.rootCid}
+                        reviewLabel="Review Bundle"
+                        onReview={props.onReviewProposalBundle}
+                        onCastVote={props.onCastVote}
+                        onQueue={props.onQueue}
+                        onExecute={props.onExecute}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
               {props.proposalRows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="studio-empty-cell">

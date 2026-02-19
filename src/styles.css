@@ -222,6 +222,32 @@ a {
   color: var(--text-dim);
 }
 
+.studio-submit-feedback {
+  border: 1px solid rgba(156, 214, 255, 0.28);
+  border-radius: 10px;
+  background: rgba(10, 24, 41, 0.72);
+  padding: 9px 10px;
+  font-size: 0.85rem;
+  color: var(--text-1);
+}
+
+.studio-submit-feedback.pending {
+  border-color: rgba(159, 217, 255, 0.36);
+  color: #cde9ff;
+}
+
+.studio-submit-feedback.success {
+  border-color: rgba(140, 222, 179, 0.45);
+  color: #bcf9dd;
+  background: rgba(12, 42, 34, 0.68);
+}
+
+.studio-submit-feedback.error {
+  border-color: rgba(243, 131, 163, 0.5);
+  color: #ffd0dc;
+  background: rgba(58, 18, 33, 0.72);
+}
+
 .studio-kv {
   margin: 0;
   display: grid;
@@ -285,11 +311,33 @@ button:focus-visible {
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: transform 120ms ease, background 120ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .btn:hover:not(:disabled) {
   transform: translateY(-1px);
   background: rgba(22, 45, 70, 0.98);
+}
+
+.studio-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid rgba(173, 218, 246, 0.35);
+  border-top-color: rgba(226, 246, 255, 0.95);
+  animation: studio-spin 700ms linear infinite;
+}
+
+@keyframes studio-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .btn-primary {
@@ -645,16 +693,28 @@ button:focus-visible {
   bottom: 16px;
   z-index: 50;
   max-width: min(520px, calc(100vw - 24px));
-  border: 1px solid rgba(240, 135, 157, 0.45);
-  background: rgba(36, 15, 24, 0.95);
+  border: 1px solid rgba(134, 221, 177, 0.48);
+  background: rgba(15, 39, 28, 0.95);
   border-radius: 12px;
-  color: #ffd6de;
+  color: #caffe4;
   padding: 10px 12px;
   display: flex;
   gap: 10px;
   align-items: center;
   justify-content: space-between;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+.studio-toast.info {
+  border-color: rgba(123, 205, 248, 0.45);
+  background: rgba(14, 32, 47, 0.95);
+  color: #d2efff;
+}
+
+.studio-toast.error {
+  border-color: rgba(240, 135, 157, 0.45);
+  background: rgba(36, 15, 24, 0.95);
+  color: #ffd6de;
 }
 
 @media (max-width: 1020px) {

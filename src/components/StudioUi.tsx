@@ -30,9 +30,13 @@ export function Field(props: { label: string; hint?: string; children: ReactNode
   );
 }
 
-export function Toast(props: { message: string; onClose: () => void }) {
+export function Toast(props: {
+  message: string;
+  tone: "success" | "info" | "error";
+  onClose: () => void;
+}) {
   return (
-    <div className="studio-toast" role="status" aria-live="polite">
+    <div className={`studio-toast ${props.tone}`} role="status" aria-live="polite">
       <span>{props.message}</span>
       <button className="btn" onClick={props.onClose}>
         Dismiss

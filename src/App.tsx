@@ -12,10 +12,14 @@ import {
 } from "./eth/clients";
 import {
   type ProposalInfo,
+  type ProposalRuntimeInfo,
   castVote,
   executeProposal,
+  getProposerEligibility,
   listProposals,
+  loadProposalRuntimeData,
   queueProposal,
+  waitForProposalCreated,
 } from "./eth/governor";
 import { listDapps, proposePublish, proposeUpgrade, type DappRow } from "./eth/registry";
 import {
@@ -48,6 +52,8 @@ import {
 } from "./features/studio-model";
 
 const SNIPPET_PAGE_LINES = 180;
+const PROPOSAL_INDEX_RETRY_COUNT = 8;
+const PROPOSAL_INDEX_RETRY_DELAY_MS = 1500;
 
 type ProposalFilter = "all" | "active" | "historical";
 type VoteSupport = "for" | "against" | "abstain";
@@ -69,10 +75,20 @@ export function App() {
 
   const [, setStatus] = useState<string>("Connect wallet to begin");
   const [txHash, setTxHash] = useState<Hex | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; tone: "success" | "info" | "error" } | null>(null);
+  const [publishSubmitting, setPublishSubmitting] = useState(false);
+  const [publishFeedback, setPublishFeedback] = useState<{
+    kind: "pending" | "success" | "error";
+    message: string;
+  } | null>(null);
 
   const [proposals, setProposals] = useState<ProposalInfo[]>([]);
   const [dapps, setDapps] = useState<DappRow[]>([]);
+  const [proposalRuntimeById, setProposalRuntimeById] = useState<Record<string, ProposalRuntimeInfo>>({});
+  const [chainHead, setChainHead] = useState<{ blockNumber: bigint; blockTimestamp: bigint } | null>(null);
+  const [pendingGovernanceActionByProposalId, setPendingGovernanceActionByProposalId] = useState<
+    Record<string, "vote" | "queue" | "execute" | null>
+  >({});
 
   const [publishRootCid, setPublishRootCid] = useState("");
   const [publishName, setPublishName] = useState("");
@@ -110,8 +126,8 @@ export function App() {
   const needsSupportedChain = chainId !== null && !network;
   const walletBalance = useMemo(() => formatEthBalance(ethBalance), [ethBalance]);
 
-  function pushToast(message: string) {
-    setToast(message);
+  function pushToast(message: string, tone: "success" | "info" | "error" = "info") {
+    setToast({ message, tone });
   }
 
   function updateReviewCid(value: string) {
@@ -119,10 +135,45 @@ export function App() {
     setReviewCid(value);
   }
 
+  function setGovernanceActionPending(
+    proposalId: bigint,
+    action: "vote" | "queue" | "execute" | null
+  ) {
+    const key = proposalId.toString();
+    setPendingGovernanceActionByProposalId((prev) => ({ ...prev, [key]: action }));
+  }
+
+  function isSuccessfulReceiptStatus(status: unknown): boolean {
+    return status === "success" || status === true || status === 1 || status === 1n;
+  }
+
+  function extractErrorMessage(err: unknown, fallbackMessage: string): string {
+    if (err instanceof Error && err.message) return err.message;
+    if (err && typeof err === "object") {
+      const rec = err as Record<string, unknown>;
+      const messageFields = ["shortMessage", "details", "reason", "message"];
+      for (const field of messageFields) {
+        const value = rec[field];
+        if (typeof value === "string" && value.trim()) {
+          return value;
+        }
+      }
+      const cause = rec.cause;
+      if (cause && typeof cause === "object") {
+        const causeMessage = (cause as Record<string, unknown>).message;
+        if (typeof causeMessage === "string" && causeMessage.trim()) {
+          return causeMessage;
+        }
+      }
+    }
+    return fallbackMessage;
+  }
+
   function reportError(err: unknown, fallbackMessage = "Something went wrong") {
-    const message = err instanceof Error ? err.message : fallbackMessage;
+    const message = extractErrorMessage(err, fallbackMessage);
+    console.error("[studio] action failed", { fallbackMessage, err });
     setStatus(message);
-    pushToast(message);
+    pushToast(message, "error");
   }
 
   const syncInjectedWalletState = useCallback(async () => {
@@ -229,7 +280,7 @@ export function App() {
     }
   }
 
-  async function refreshGovernanceData() {
+  async function refreshGovernanceData(): Promise<{ proposals: ProposalInfo[]; dapps: DappRow[] } | null> {
     try {
       const clients = await withClients();
       const fromBlock = blockFrom(clients.network);
@@ -240,12 +291,46 @@ export function App() {
         listProposals(clients.publicClient, clients.network.vfiGovernor, fromBlock),
         listDapps(clients.publicClient, clients.network.dappRegistry, fromBlock),
       ]);
+      try {
+        const runtime = await loadProposalRuntimeData(
+          clients.publicClient,
+          clients.network.vfiGovernor,
+          nextProposals,
+          clients.account,
+          fromBlock
+        );
+        setProposalRuntimeById(runtime.byProposalId);
+        setChainHead({ blockNumber: runtime.blockNumber, blockTimestamp: runtime.blockTimestamp });
+      } catch (runtimeErr) {
+        console.warn("[studio] failed to refresh proposal runtime metadata", runtimeErr);
+      }
       setProposals(nextProposals);
       setDapps(nextDapps);
       setStatus(`Loaded ${nextProposals.length} proposals and ${nextDapps.length} dapps`);
+      return { proposals: nextProposals, dapps: nextDapps };
     } catch (err) {
       reportError(err, "Failed to refresh governance data");
+      return null;
     }
+  }
+
+  async function waitForProposalToAppear(expectedProposalId: bigint | null): Promise<boolean> {
+    for (let attempt = 1; attempt <= PROPOSAL_INDEX_RETRY_COUNT; attempt += 1) {
+      const data = await refreshGovernanceData();
+      if (!expectedProposalId) {
+        return data !== null;
+      }
+      if (data?.proposals.some((proposal) => proposal.proposalId === expectedProposalId)) {
+        return true;
+      }
+      if (attempt < PROPOSAL_INDEX_RETRY_COUNT) {
+        setStatus(
+          `Waiting for proposal #${expectedProposalId.toString()} to index (${attempt}/${PROPOSAL_INDEX_RETRY_COUNT})...`
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, PROPOSAL_INDEX_RETRY_DELAY_MS));
+      }
+    }
+    return false;
   }
 
   useEffect(() => {
@@ -257,15 +342,51 @@ export function App() {
   }, [publicClient, walletClient, account, network, chainId]);
 
   useEffect(() => {
+    if (!(publicClient && walletClient && account && network) || chainId === null) return;
+    const intervalMs = studioPage === "proposals" ? 5000 : 25000;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void refreshGovernanceData();
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [publicClient, walletClient, account, network, chainId, studioPage]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 5000);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
   async function onProposePublish() {
+    setPublishSubmitting(true);
     try {
       const clients = await withClients();
+      setPublishFeedback({ kind: "pending", message: "Checking proposer voting power..." });
+      const eligibility = await getProposerEligibility(
+        clients.publicClient,
+        clients.network.vfiGovernor,
+        clients.account
+      );
+      console.info("[studio] publish proposal eligibility", {
+        governor: clients.network.vfiGovernor,
+        account: clients.account,
+        currentBlock: eligibility.currentBlock.toString(),
+        snapshotBlock: eligibility.snapshotBlock.toString(),
+        votes: eligibility.votes.toString(),
+        threshold: eligibility.threshold.toString(),
+        eligible: eligibility.eligible,
+      });
+
+      if (!eligibility.eligible) {
+        throw new Error(
+          `Insufficient proposer voting power at block ${eligibility.snapshotBlock.toString()}: ` +
+          `have ${eligibility.votes.toString()}, need ${eligibility.threshold.toString()}. ` +
+          "Delegate voting power to your proposer wallet and try again."
+        );
+      }
+
       setStatus("Submitting publish proposal...");
+      setPublishFeedback({ kind: "pending", message: "Please confirm the transaction in your wallet..." });
       const hash = await proposePublish(
         clients.walletClient,
         clients.network.vfiGovernor,
@@ -280,10 +401,42 @@ export function App() {
         }
       );
       setTxHash(hash);
-      setStatus("Publish proposal submitted");
-      await refreshGovernanceData();
+      setStatus("Publish proposal submitted; waiting for confirmation...");
+      setPublishFeedback({ kind: "pending", message: `Transaction submitted: ${shortHash(hash)}. Waiting for confirmation...` });
+      const proposalId = await waitForProposalCreated(
+        clients.publicClient,
+        clients.network.vfiGovernor,
+        hash
+      );
+      setPublishFeedback({
+        kind: "pending",
+        message: proposalId
+          ? `Confirmed on-chain. Waiting for proposal #${proposalId.toString()} to appear...`
+          : "Confirmed on-chain. Waiting for proposal list to refresh...",
+      });
+      console.info("[studio] publish proposal submitted", { txHash: hash });
+      const appeared = await waitForProposalToAppear(proposalId);
+      if (!appeared) {
+        pushToast("Proposal transaction confirmed, but indexing is delayed. Please refresh shortly.", "info");
+      }
+      setPublishRootCid("");
+      setPublishName("");
+      setPublishVersion("");
+      setPublishDescription("");
+      setPublishProposalDescription("");
+      setPublishFeedback({
+        kind: "success",
+        message: proposalId
+          ? `Publish proposal #${proposalId.toString()} is now visible.`
+          : "Publish proposal confirmed.",
+      });
+      setStudioPage("proposals");
     } catch (err) {
+      const message = extractErrorMessage(err, "Failed to submit publish proposal");
+      setPublishFeedback({ kind: "error", message });
       reportError(err, "Failed to submit publish proposal");
+    } finally {
+      setPublishSubmitting(false);
     }
   }
 
@@ -306,14 +459,30 @@ export function App() {
         }
       );
       setTxHash(hash);
-      setStatus("Upgrade proposal submitted");
-      await refreshGovernanceData();
+      setStatus("Upgrade proposal submitted; waiting for confirmation...");
+      const proposalId = await waitForProposalCreated(
+        clients.publicClient,
+        clients.network.vfiGovernor,
+        hash
+      );
+      const appeared = await waitForProposalToAppear(proposalId);
+      if (!appeared) {
+        pushToast("Proposal transaction confirmed, but indexing is delayed. Please refresh shortly.", "info");
+      }
+      setUpgradeDappId("");
+      setUpgradeRootCid("");
+      setUpgradeName("");
+      setUpgradeVersion("");
+      setUpgradeDescription("");
+      setUpgradeProposalDescription("");
+      setStudioPage("proposals");
     } catch (err) {
       reportError(err, "Failed to submit upgrade proposal");
     }
   }
 
   async function onCastVote(proposalId: bigint) {
+    setGovernanceActionPending(proposalId, "vote");
     try {
       const clients = await withClients();
       setStatus(`Casting ${voteSupport} vote...`);
@@ -326,36 +495,74 @@ export function App() {
         voteReason
       );
       setTxHash(hash);
-      setStatus("Vote submitted");
+      setStatus("Vote submitted; waiting for confirmation...");
+      const receipt = await (clients.publicClient as any).waitForTransactionReceipt({
+        hash,
+        confirmations: 1,
+        timeout: 120_000,
+      });
+      if (!isSuccessfulReceiptStatus((receipt as { status?: unknown }).status)) {
+        throw new Error(`Vote transaction failed or reverted (${shortHash(hash)})`);
+      }
+      pushToast(`Vote confirmed: ${shortHash(hash)}`, "success");
+      setStatus("Vote confirmed");
       await refreshGovernanceData();
     } catch (err) {
       reportError(err, "Failed to cast vote");
+    } finally {
+      setGovernanceActionPending(proposalId, null);
     }
   }
 
   async function onQueue(proposal: ProposalInfo) {
+    setGovernanceActionPending(proposal.proposalId, "queue");
     try {
       const clients = await withClients();
       setStatus(`Queueing proposal #${proposal.proposalId.toString()}...`);
       const hash = await queueProposal(clients.walletClient, clients.network.vfiGovernor, clients.account, proposal);
       setTxHash(hash);
-      setStatus("Queue submitted");
+      setStatus("Queue submitted; waiting for confirmation...");
+      const receipt = await (clients.publicClient as any).waitForTransactionReceipt({
+        hash,
+        confirmations: 1,
+        timeout: 120_000,
+      });
+      if (!isSuccessfulReceiptStatus((receipt as { status?: unknown }).status)) {
+        throw new Error(`Queue transaction failed or reverted (${shortHash(hash)})`);
+      }
+      pushToast(`Queue confirmed: ${shortHash(hash)}`, "success");
+      setStatus("Queue confirmed");
       await refreshGovernanceData();
     } catch (err) {
       reportError(err, "Failed to queue proposal");
+    } finally {
+      setGovernanceActionPending(proposal.proposalId, null);
     }
   }
 
   async function onExecute(proposal: ProposalInfo) {
+    setGovernanceActionPending(proposal.proposalId, "execute");
     try {
       const clients = await withClients();
       setStatus(`Executing proposal #${proposal.proposalId.toString()}...`);
       const hash = await executeProposal(clients.walletClient, clients.network.vfiGovernor, clients.account, proposal);
       setTxHash(hash);
-      setStatus("Execute submitted");
+      setStatus("Execute submitted; waiting for confirmation...");
+      const receipt = await (clients.publicClient as any).waitForTransactionReceipt({
+        hash,
+        confirmations: 1,
+        timeout: 120_000,
+      });
+      if (!isSuccessfulReceiptStatus((receipt as { status?: unknown }).status)) {
+        throw new Error(`Execute transaction failed or reverted (${shortHash(hash)})`);
+      }
+      pushToast(`Execute confirmed: ${shortHash(hash)}`, "success");
+      setStatus("Execute confirmed");
       await refreshGovernanceData();
     } catch (err) {
       reportError(err, "Failed to execute proposal");
+    } finally {
+      setGovernanceActionPending(proposal.proposalId, null);
     }
   }
 
@@ -484,7 +691,7 @@ export function App() {
     if (!ref) {
       const message = `Proposal #${proposal.proposalId.toString()} does not include a publish/upgrade bundle CID`;
       setStatus(message);
-      pushToast(message);
+      pushToast(message, "info");
       return;
     }
     setStudioPage("review");
@@ -498,6 +705,9 @@ export function App() {
   }
 
   function onPublishChange(field: PublishFormField, value: string) {
+    if (publishFeedback?.kind === "error") {
+      setPublishFeedback(null);
+    }
     switch (field) {
       case "rootCid":
         setPublishRootCid(value);
@@ -541,6 +751,11 @@ export function App() {
   }
 
   const canAct = !!(publicClient && walletClient && account && network);
+  const getLiveProposalState = useCallback(
+    (proposal: ProposalInfo) =>
+      proposalRuntimeById[proposal.proposalId.toString()]?.state ?? proposal.state,
+    [proposalRuntimeById]
+  );
   const filteredReviewFiles = useMemo(() => {
     const needle = reviewQuery.trim().toLowerCase();
     if (!needle) return reviewFiles;
@@ -552,10 +767,10 @@ export function App() {
   const visibleProposals = useMemo(() => {
     if (proposalView === "all") return proposals;
     if (proposalView === "historical") {
-      return proposals.filter((proposal) => HISTORICAL_STATES.has(proposal.state));
+      return proposals.filter((proposal) => HISTORICAL_STATES.has(getLiveProposalState(proposal)));
     }
-    return proposals.filter((proposal) => !HISTORICAL_STATES.has(proposal.state));
-  }, [proposals, proposalView]);
+    return proposals.filter((proposal) => !HISTORICAL_STATES.has(getLiveProposalState(proposal)));
+  }, [proposals, proposalView, getLiveProposalState]);
   const proposalRows = useMemo<ProposalWithBundle[]>(() => {
     return visibleProposals
       .filter((proposal) => proposal && typeof proposal.proposalId === "bigint")
@@ -567,16 +782,20 @@ export function App() {
   const proposalStateCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const item of proposals) {
-      counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
+      const state = getLiveProposalState(item);
+      counts.set(state, (counts.get(state) ?? 0) + 1);
     }
     return counts;
-  }, [proposals]);
+  }, [proposals, getLiveProposalState]);
   const queuedActions = useMemo(
     () =>
       proposalRows.filter(({ proposal }) =>
-        proposal.state === "Active" || proposal.state === "Succeeded" || proposal.state === "Queued"
+        (() => {
+          const state = getLiveProposalState(proposal);
+          return state === "Active" || state === "Succeeded" || state === "Queued";
+        })()
       ),
-    [proposalRows]
+    [proposalRows, getLiveProposalState]
   );
   const recentDapps = useMemo(() => dapps.slice(0, 8), [dapps]);
   const reviewCodeFileCount = useMemo(() => reviewFiles.filter((file) => file.isCode).length, [reviewFiles]);
@@ -648,6 +867,9 @@ export function App() {
             executedCount={proposalStateCounts.get("Executed") ?? 0}
             dappsCount={dapps.length}
             queuedActions={queuedActions}
+            proposalRuntimeById={proposalRuntimeById}
+            chainHead={chainHead}
+            pendingGovernanceActionByProposalId={pendingGovernanceActionByProposalId}
             recentDapps={recentDapps}
             canAct={canAct}
             reviewLoading={reviewLoading}
@@ -676,8 +898,13 @@ export function App() {
               proposalDescription: upgradeProposalDescription,
             }}
             canAct={canAct}
+            publishSubmitting={publishSubmitting}
+            publishFeedback={publishFeedback}
             reviewLoading={reviewLoading}
             queuedActions={queuedActions}
+            proposalRuntimeById={proposalRuntimeById}
+            chainHead={chainHead}
+            pendingGovernanceActionByProposalId={pendingGovernanceActionByProposalId}
             onPublishChange={onPublishChange}
             onUpgradeChange={onUpgradeChange}
             onProposePublish={onProposePublish}
@@ -695,6 +922,9 @@ export function App() {
             voteSupport={voteSupport}
             voteReason={voteReason}
             proposalRows={proposalRows}
+            proposalRuntimeById={proposalRuntimeById}
+            chainHead={chainHead}
+            pendingGovernanceActionByProposalId={pendingGovernanceActionByProposalId}
             dapps={dapps}
             canAct={canAct}
             reviewLoading={reviewLoading}
@@ -733,7 +963,7 @@ export function App() {
             onOpenTypedReviewPath={onOpenTypedReviewPath}
           />
         ) : null}
-        {toast ? <Toast message={toast} onClose={() => setToast(null)} /> : null}
+        {toast ? <Toast message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null}
       </main>
     </div>
   );
