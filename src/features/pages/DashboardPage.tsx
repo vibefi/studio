@@ -1,6 +1,6 @@
 import { SectionCard } from "../../components/StudioUi";
 import type { DappRow } from "../../eth/registry";
-import type { ProposalInfo } from "../../eth/governor";
+import type { ProposalInfo, ProposalRuntimeInfo } from "../../eth/governor";
 import type { ProposalWithBundle } from "../studio-model";
 import { proposalStateClass } from "../studio-model";
 import { ProposalActionButtons } from "../components/ProposalActionButtons";
@@ -13,6 +13,9 @@ type DashboardPageProps = {
   executedCount: number;
   dappsCount: number;
   queuedActions: ProposalWithBundle[];
+  proposalRuntimeById: Record<string, ProposalRuntimeInfo>;
+  chainHead: { blockNumber: bigint; blockTimestamp: bigint } | null;
+  pendingGovernanceActionByProposalId: Record<string, "vote" | "queue" | "execute" | null>;
   recentDapps: DappRow[];
   canAct: boolean;
   reviewLoading: boolean;
@@ -55,23 +58,32 @@ export function DashboardPage(props: DashboardPageProps) {
       <SectionCard title="Priority Queue" subtitle="Top proposals that need governance actions">
         <div className="studio-list">
           {props.queuedActions.slice(0, 8).map(({ proposal, bundleRef }) => (
-            <div className="studio-list-item" key={`dashboard-${proposal.proposalId.toString()}`}>
-              <div>
-                <strong>#{proposal.proposalId.toString()}</strong>{" "}
-                <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
-                <p>{proposal.description}</p>
-              </div>
-              <ProposalActionButtons
-                proposal={proposal}
-                canAct={props.canAct}
-                reviewLoading={props.reviewLoading}
-                hasBundle={!!bundleRef?.rootCid}
-                onReview={props.onReviewProposalBundle}
-                onCastVote={props.onCastVote}
-                onQueue={props.onQueue}
-                onExecute={props.onExecute}
-              />
-            </div>
+            (() => {
+              const runtime = props.proposalRuntimeById[proposal.proposalId.toString()];
+              const state = runtime?.state ?? proposal.state;
+              return (
+                <div className="studio-list-item" key={`dashboard-${proposal.proposalId.toString()}`}>
+                  <div>
+                    <strong>#{proposal.proposalId.toString()}</strong>{" "}
+                    <span className={`state-chip ${proposalStateClass(state)}`}>{state}</span>
+                    <p>{proposal.description}</p>
+                  </div>
+                  <ProposalActionButtons
+                    proposal={proposal}
+                    runtime={runtime}
+                    chainHead={props.chainHead}
+                    pendingAction={props.pendingGovernanceActionByProposalId[proposal.proposalId.toString()] ?? null}
+                    canAct={props.canAct}
+                    reviewLoading={props.reviewLoading}
+                    hasBundle={!!bundleRef?.rootCid}
+                    onReview={props.onReviewProposalBundle}
+                    onCastVote={props.onCastVote}
+                    onQueue={props.onQueue}
+                    onExecute={props.onExecute}
+                  />
+                </div>
+              );
+            })()
           ))}
           {props.queuedActions.length === 0 ? (
             <div className="studio-empty-cell">No actionable proposals right now.</div>

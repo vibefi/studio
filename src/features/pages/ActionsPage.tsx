@@ -1,4 +1,4 @@
-import type { ProposalInfo } from "../../eth/governor";
+import type { ProposalInfo, ProposalRuntimeInfo } from "../../eth/governor";
 import { Field, SectionCard } from "../../components/StudioUi";
 import type { ProposalWithBundle } from "../studio-model";
 import { proposalStateClass } from "../studio-model";
@@ -25,8 +25,13 @@ type ActionsPageProps = {
   publishForm: PublishFormState;
   upgradeForm: UpgradeFormState;
   canAct: boolean;
+  publishSubmitting: boolean;
+  publishFeedback: { kind: "pending" | "success" | "error"; message: string } | null;
   reviewLoading: boolean;
   queuedActions: ProposalWithBundle[];
+  proposalRuntimeById: Record<string, ProposalRuntimeInfo>;
+  chainHead: { blockNumber: bigint; blockTimestamp: bigint } | null;
+  pendingGovernanceActionByProposalId: Record<string, "vote" | "queue" | "execute" | null>;
   onPublishChange: (field: keyof PublishFormState, value: string) => void;
   onUpgradeChange: (field: keyof UpgradeFormState, value: string) => void;
   onProposePublish: () => void;
@@ -78,9 +83,14 @@ export function ActionsPage(props: ActionsPageProps) {
                 placeholder="optional"
               />
             </Field>
-            <button className="btn btn-primary" onClick={props.onProposePublish} disabled={!props.canAct}>
-              Submit Publish Proposal
+            <button className="btn btn-primary" onClick={props.onProposePublish} disabled={!props.canAct || props.publishSubmitting}>
+              {props.publishSubmitting ? "Submitting..." : "Submit Publish Proposal"}
             </button>
+            {props.publishFeedback ? (
+              <div className={`studio-submit-feedback ${props.publishFeedback.kind}`} role="status" aria-live="polite">
+                {props.publishFeedback.message}
+              </div>
+            ) : null}
           </div>
         </SectionCard>
 
@@ -148,25 +158,34 @@ export function ActionsPage(props: ActionsPageProps) {
             </thead>
             <tbody>
               {props.queuedActions.map(({ proposal, bundleRef }) => (
-                <tr key={`action-${proposal.proposalId.toString()}`}>
-                  <td>#{proposal.proposalId.toString()}</td>
-                  <td>
-                    <span className={`state-chip ${proposalStateClass(proposal.state)}`}>{proposal.state}</span>
-                  </td>
-                  <td>{proposal.description}</td>
-                  <td>
-                    <ProposalActionButtons
-                      proposal={proposal}
-                      canAct={props.canAct}
-                      reviewLoading={props.reviewLoading}
-                      hasBundle={!!bundleRef?.rootCid}
-                      onReview={props.onReviewProposalBundle}
-                      onCastVote={props.onCastVote}
-                      onQueue={props.onQueue}
-                      onExecute={props.onExecute}
-                    />
-                  </td>
-                </tr>
+                (() => {
+                  const runtime = props.proposalRuntimeById[proposal.proposalId.toString()];
+                  const state = runtime?.state ?? proposal.state;
+                  return (
+                    <tr key={`action-${proposal.proposalId.toString()}`}>
+                      <td>#{proposal.proposalId.toString()}</td>
+                      <td>
+                        <span className={`state-chip ${proposalStateClass(state)}`}>{state}</span>
+                      </td>
+                      <td>{proposal.description}</td>
+                      <td>
+                        <ProposalActionButtons
+                          proposal={proposal}
+                          runtime={runtime}
+                          chainHead={props.chainHead}
+                          pendingAction={props.pendingGovernanceActionByProposalId[proposal.proposalId.toString()] ?? null}
+                          canAct={props.canAct}
+                          reviewLoading={props.reviewLoading}
+                          hasBundle={!!bundleRef?.rootCid}
+                          onReview={props.onReviewProposalBundle}
+                          onCastVote={props.onCastVote}
+                          onQueue={props.onQueue}
+                          onExecute={props.onExecute}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })()
               ))}
               {props.queuedActions.length === 0 ? (
                 <tr>
