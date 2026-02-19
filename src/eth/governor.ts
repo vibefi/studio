@@ -367,6 +367,11 @@ export async function waitForProposalCreated(
     confirmations: 1,
     timeout: timeoutMs,
   });
+  const status = (receipt as { status?: unknown }).status;
+  const success = status === "success" || status === true || status === 1 || status === 1n;
+  if (!success) {
+    throw new Error(`Transaction ${txHash} failed or reverted (status=${String(status)})`);
+  }
 
   const governorLower = governor.toLowerCase();
   const topic0 = toEventSelector(PROPOSAL_CREATED_EVENT).toLowerCase();

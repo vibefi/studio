@@ -73,7 +73,7 @@ export function App() {
   const [publicClient, setPublicClient] = useState<PublicClient | null>(null);
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
 
-  const [status, setStatus] = useState<string>("Connect wallet to begin");
+  const [, setStatus] = useState<string>("Connect wallet to begin");
   const [txHash, setTxHash] = useState<Hex | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "info" | "error" } | null>(null);
   const [publishSubmitting, setPublishSubmitting] = useState(false);
@@ -141,6 +141,10 @@ export function App() {
   ) {
     const key = proposalId.toString();
     setPendingGovernanceActionByProposalId((prev) => ({ ...prev, [key]: action }));
+  }
+
+  function isSuccessfulReceiptStatus(status: unknown): boolean {
+    return status === "success" || status === true || status === 1 || status === 1n;
   }
 
   function extractErrorMessage(err: unknown, fallbackMessage: string): string {
@@ -339,11 +343,13 @@ export function App() {
 
   useEffect(() => {
     if (!(publicClient && walletClient && account && network) || chainId === null) return;
+    const intervalMs = studioPage === "proposals" ? 5000 : 25000;
     const timer = window.setInterval(() => {
+      if (document.hidden) return;
       void refreshGovernanceData();
-    }, 5000);
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [publicClient, walletClient, account, network, chainId]);
+  }, [publicClient, walletClient, account, network, chainId, studioPage]);
 
   useEffect(() => {
     if (!toast) return;
@@ -490,11 +496,14 @@ export function App() {
       );
       setTxHash(hash);
       setStatus("Vote submitted; waiting for confirmation...");
-      await (clients.publicClient as any).waitForTransactionReceipt({
+      const receipt = await (clients.publicClient as any).waitForTransactionReceipt({
         hash,
         confirmations: 1,
         timeout: 120_000,
       });
+      if (!isSuccessfulReceiptStatus((receipt as { status?: unknown }).status)) {
+        throw new Error(`Vote transaction failed or reverted (${shortHash(hash)})`);
+      }
       pushToast(`Vote confirmed: ${shortHash(hash)}`, "success");
       setStatus("Vote confirmed");
       await refreshGovernanceData();
@@ -513,11 +522,14 @@ export function App() {
       const hash = await queueProposal(clients.walletClient, clients.network.vfiGovernor, clients.account, proposal);
       setTxHash(hash);
       setStatus("Queue submitted; waiting for confirmation...");
-      await (clients.publicClient as any).waitForTransactionReceipt({
+      const receipt = await (clients.publicClient as any).waitForTransactionReceipt({
         hash,
         confirmations: 1,
         timeout: 120_000,
       });
+      if (!isSuccessfulReceiptStatus((receipt as { status?: unknown }).status)) {
+        throw new Error(`Queue transaction failed or reverted (${shortHash(hash)})`);
+      }
       pushToast(`Queue confirmed: ${shortHash(hash)}`, "success");
       setStatus("Queue confirmed");
       await refreshGovernanceData();
@@ -536,11 +548,14 @@ export function App() {
       const hash = await executeProposal(clients.walletClient, clients.network.vfiGovernor, clients.account, proposal);
       setTxHash(hash);
       setStatus("Execute submitted; waiting for confirmation...");
-      await (clients.publicClient as any).waitForTransactionReceipt({
+      const receipt = await (clients.publicClient as any).waitForTransactionReceipt({
         hash,
         confirmations: 1,
         timeout: 120_000,
       });
+      if (!isSuccessfulReceiptStatus((receipt as { status?: unknown }).status)) {
+        throw new Error(`Execute transaction failed or reverted (${shortHash(hash)})`);
+      }
       pushToast(`Execute confirmed: ${shortHash(hash)}`, "success");
       setStatus("Execute confirmed");
       await refreshGovernanceData();
