@@ -250,6 +250,30 @@ export function App() {
     };
   }, [syncInjectedWalletState]);
 
+  useEffect(() => {
+    const eth = window.ethereum;
+    if (!eth?.on) return;
+    const onProposalDraft = (draft: unknown) => {
+      if (!draft || typeof draft !== "object") return;
+      const d = draft as Record<string, unknown>;
+      if (d.dappId) {
+        setUpgradeDappId(String(d.dappId));
+        setUpgradeRootCid(typeof d.rootCid === "string" ? d.rootCid : "");
+        setUpgradeName(typeof d.name === "string" ? d.name : "");
+        setUpgradeVersion(typeof d.version === "string" ? d.version : "");
+        setUpgradeDescription(typeof d.description === "string" ? d.description : "");
+        setUpgradeProposalDescription(
+          `Upgrade dapp #${String(d.dappId)} to ${d.version ?? "?"}: ${d.description ?? ""}`
+        );
+        setStudioPage("actions");
+      }
+    };
+    eth.on("proposalDraftReceived", onProposalDraft);
+    return () => {
+      eth.removeListener?.("proposalDraftReceived", onProposalDraft);
+    };
+  }, []);
+
   async function withClients() {
     if (!publicClient || !walletClient || !account || !network) {
       throw new Error("Wallet/network not ready");
