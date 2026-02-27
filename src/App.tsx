@@ -256,7 +256,11 @@ export function App() {
     const onProposalDraft = (draft: unknown) => {
       if (!draft || typeof draft !== "object") return;
       const d = draft as Record<string, unknown>;
-      if (d.dappId) {
+      const hasDappId =
+        d.dappId !== undefined &&
+        d.dappId !== null &&
+        String(d.dappId).trim().length > 0;
+      if (hasDappId) {
         setUpgradeDappId(String(d.dappId));
         setUpgradeRootCid(typeof d.rootCid === "string" ? d.rootCid : "");
         setUpgradeName(typeof d.name === "string" ? d.name : "");
@@ -265,8 +269,8 @@ export function App() {
         setUpgradeProposalDescription(
           `Upgrade dapp #${String(d.dappId)} to ${d.version ?? "?"}: ${d.description ?? ""}`
         );
-        setStudioPage("actions");
       }
+      setStudioPage("actions");
     };
     eth.on("proposalDraftReceived", onProposalDraft);
     return () => {
