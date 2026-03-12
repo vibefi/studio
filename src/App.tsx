@@ -54,6 +54,7 @@ import {
 const SNIPPET_PAGE_LINES = 180;
 const PROPOSAL_INDEX_RETRY_COUNT = 8;
 const PROPOSAL_INDEX_RETRY_DELAY_MS = 1500;
+const PROVIDER_LISTENER_ATTACH_RETRY_MS = 1000;
 
 type ProposalFilter = "all" | "active" | "historical";
 type VoteSupport = "for" | "against" | "abstain";
@@ -250,33 +251,68 @@ export function App() {
     };
   }, [syncInjectedWalletState]);
 
-  useEffect(() => {
-    const eth = window.ethereum;
-    if (!eth?.on) return;
-    const onProposalDraft = (draft: unknown) => {
-      if (!draft || typeof draft !== "object") return;
-      const d = draft as Record<string, unknown>;
-      const hasDappId =
-        d.dappId !== undefined &&
-        d.dappId !== null &&
-        String(d.dappId).trim().length > 0;
-      if (hasDappId) {
-        setUpgradeDappId(String(d.dappId));
-        setUpgradeRootCid(typeof d.rootCid === "string" ? d.rootCid : "");
-        setUpgradeName(typeof d.name === "string" ? d.name : "");
-        setUpgradeVersion(typeof d.version === "string" ? d.version : "");
-        setUpgradeDescription(typeof d.description === "string" ? d.description : "");
-        setUpgradeProposalDescription(
-          `Upgrade dapp #${String(d.dappId)} to ${d.version ?? "?"}: ${d.description ?? ""}`
-        );
-      }
-      setStudioPage("actions");
-    };
-    eth.on("proposalDraftReceived", onProposalDraft);
-    return () => {
-      eth.removeListener?.("proposalDraftReceived", onProposalDraft);
-    };
+  const applyUpgradeProposalDraft = useCallback((draft: unknown): boolean => {
+    if (!draft || typeof draft !== "object") return false;
+
+    const d = draft as Record<string, unknown>;
+    const rawDappId = d.dappId;
+    const dappId = rawDappId === undefined || rawDappId === null ? "" : String(rawDappId).trim();
+    if (!/^\d+$/.test(dappId)) return false;
+
+    const nextRootCid = typeof d.rootCid === "string" ? d.rootCid : "";
+    const nextName = typeof d.name === "string" ? d.name : "";
+    const nextVersion = typeof d.version === "string" ? d.version : "";
+    const nextDescription = typeof d.description === "string" ? d.description : "";
+
+    setUpgradeDappId(dappId);
+    setUpgradeRootCid(nextRootCid);
+    setUpgradeName(nextName);
+    setUpgradeVersion(nextVersion);
+    setUpgradeDescription(nextDescription);
+    setUpgradeProposalDescription(`Upgrade dapp #${dappId} to ${nextVersion || "?"}: ${nextDescription}`);
+    return true;
   }, []);
+
+  useEffect(() => {
+    let retryTimerId: number | null = null;
+    let removeListener: (() => void) | null = null;
+
+    const onProposalDraft = (draft: unknown) => {
+      if (applyUpgradeProposalDraft(draft)) {
+        setStudioPage("actions");
+      }
+    };
+
+    const attachListenerIfPossible = (): boolean => {
+      if (removeListener) return true;
+
+      const eth = window.ethereum;
+      if (!eth?.on) return false;
+
+      eth.on("proposalDraftReceived", onProposalDraft);
+      removeListener = () => {
+        eth.removeListener?.("proposalDraftReceived", onProposalDraft);
+        removeListener = null;
+      };
+      return true;
+    };
+
+    if (!attachListenerIfPossible()) {
+      retryTimerId = window.setInterval(() => {
+        if (attachListenerIfPossible() && retryTimerId !== null) {
+          window.clearInterval(retryTimerId);
+          retryTimerId = null;
+        }
+      }, PROVIDER_LISTENER_ATTACH_RETRY_MS);
+    }
+
+    return () => {
+      if (retryTimerId !== null) {
+        window.clearInterval(retryTimerId);
+      }
+      removeListener?.();
+    };
+  }, [applyUpgradeProposalDraft]);
 
   async function withClients() {
     if (!publicClient || !walletClient || !account || !network) {
