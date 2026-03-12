@@ -3,8 +3,8 @@ import { getRpcUrl } from "../env";
 
 type EthProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-  on?: (event: string, listener: () => void) => void;
-  removeListener?: (event: string, listener: () => void) => void;
+  on?: (event: string, listener: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
 };
 
 function normalizeChainId(value: unknown): number | null {

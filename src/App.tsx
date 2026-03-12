@@ -250,6 +250,42 @@ export function App() {
     };
   }, [syncInjectedWalletState]);
 
+  const applyUpgradeProposalDraft = useCallback((draft: unknown): boolean => {
+    if (!draft || typeof draft !== "object") return false;
+
+    const d = draft as Record<string, unknown>;
+    const rawDappId = d.dappId;
+    const dappId = rawDappId === undefined || rawDappId === null ? "" : String(rawDappId).trim();
+    if (!/^\d+$/.test(dappId)) return false;
+
+    const nextRootCid = typeof d.rootCid === "string" ? d.rootCid : "";
+    const nextName = typeof d.name === "string" ? d.name : "";
+    const nextVersion = typeof d.version === "string" ? d.version : "";
+    const nextDescription = typeof d.description === "string" ? d.description : "";
+
+    setUpgradeDappId(dappId);
+    setUpgradeRootCid(nextRootCid);
+    setUpgradeName(nextName);
+    setUpgradeVersion(nextVersion);
+    setUpgradeDescription(nextDescription);
+    setUpgradeProposalDescription(`Upgrade dapp #${dappId} to ${nextVersion || "?"}: ${nextDescription}`);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    const eth = window.ethereum;
+    if (!eth?.on) return;
+    const onProposalDraft = (draft: unknown) => {
+      if (applyUpgradeProposalDraft(draft)) {
+        setStudioPage("actions");
+      }
+    };
+    eth.on("proposalDraftReceived", onProposalDraft);
+    return () => {
+      eth.removeListener?.("proposalDraftReceived", onProposalDraft);
+    };
+  }, [applyUpgradeProposalDraft]);
+
   async function withClients() {
     if (!publicClient || !walletClient || !account || !network) {
       throw new Error("Wallet/network not ready");
