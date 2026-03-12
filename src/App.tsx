@@ -54,7 +54,6 @@ import {
 const SNIPPET_PAGE_LINES = 180;
 const PROPOSAL_INDEX_RETRY_COUNT = 8;
 const PROPOSAL_INDEX_RETRY_DELAY_MS = 1500;
-const PROVIDER_LISTENER_ATTACH_RETRY_MS = 1000;
 
 type ProposalFilter = "all" | "active" | "historical";
 type VoteSupport = "for" | "against" | "abstain";
@@ -274,43 +273,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    let retryTimerId: number | null = null;
-    let removeListener: (() => void) | null = null;
-
+    const eth = window.ethereum;
+    if (!eth?.on) return;
     const onProposalDraft = (draft: unknown) => {
       if (applyUpgradeProposalDraft(draft)) {
         setStudioPage("actions");
       }
     };
-
-    const attachListenerIfPossible = (): boolean => {
-      if (removeListener) return true;
-
-      const eth = window.ethereum;
-      if (!eth?.on) return false;
-
-      eth.on("proposalDraftReceived", onProposalDraft);
-      removeListener = () => {
-        eth.removeListener?.("proposalDraftReceived", onProposalDraft);
-        removeListener = null;
-      };
-      return true;
-    };
-
-    if (!attachListenerIfPossible()) {
-      retryTimerId = window.setInterval(() => {
-        if (attachListenerIfPossible() && retryTimerId !== null) {
-          window.clearInterval(retryTimerId);
-          retryTimerId = null;
-        }
-      }, PROVIDER_LISTENER_ATTACH_RETRY_MS);
-    }
-
+    eth.on("proposalDraftReceived", onProposalDraft);
     return () => {
-      if (retryTimerId !== null) {
-        window.clearInterval(retryTimerId);
-      }
-      removeListener?.();
+      eth.removeListener?.("proposalDraftReceived", onProposalDraft);
     };
   }, [applyUpgradeProposalDraft]);
 
